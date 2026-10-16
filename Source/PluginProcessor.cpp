@@ -71,6 +71,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout CrumbleProcessor::createLayo
                 AudioParameterFloatAttributes().withLabel ("dB")
                     .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { "autogain", 1 }, "Auto Gain", true));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "colortarget", 1 }, "Color Target",
+                StringArray { "Wet signal", "Whole signal" }, 0));
 
     return layout;
 }
@@ -95,6 +97,7 @@ CrumbleProcessor::CrumbleProcessor()
     pMix      = apvts.getRawParameterValue ("mix");
     pOutput   = apvts.getRawParameterValue ("output");
     pAutoGain = apvts.getRawParameterValue ("autogain");
+    pColorTarget = apvts.getRawParameterValue ("colortarget");
 }
 
 bool CrumbleProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -110,30 +113,44 @@ void CrumbleProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     sr = sampleRate;
     const juce::dsp::ProcessSpec spec { sr, (juce::uint32) juce::jmax (1, samplesPerBlock), 2 };
 
-    for (auto* f : { &xLow, &xHigh, &apLow, &sq1, &sq2, &sqAp })
+    for (auto* f : { &sq1, &sq2, &sqAp })
     {
         f->prepare (spec);
         f->reset();
     }
-    apLow.setType (juce::dsp::LinkwitzRileyFilterType::allpass);
     sqAp.setType (juce::dsp::LinkwitzRileyFilterType::allpass);
-
     const float sqHigh = juce::jmin (2500.0f, (float) (0.4 * sr));
     sq1.setCutoffFrequency (250.0f);
     sq2.setCutoffFrequency (sqHigh);
     sqAp.setCutoffFrequency (sqHigh);
 
+    // 4th-order Butterworth = two 2nd-order stages with these Q values
+    const float q1 = 0.5412f, q2 = 1.3066f;
+    for (auto* f : { &hp1, &hp2, &lp1, &lp2 })
+    {
+        f->prepare (spec);
+        f->reset();
+    }
+    hp1.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+    hp2.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+    lp1.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    lp2.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    hp1.setResonance (q1); hp2.setResonance (q2);
+    lp1.setResonance (q1); lp2.setResonance (q2);
     currentLowCut = currentHighCut = -1.0f;
-    updateCrossovers (pLowCut->load(), pHighCut->load());
+    updateFilters (pLowCut->load(), pHighCut->load());
 
     const int delaySize = (int) (maxDepthSeconds * sr) + 16;
     for (int ch = 0; ch < 2; ++ch)
-        for (auto* d : { &crumbleDelay[ch], &alignLow[ch], &alignHigh[ch], &alignDry[ch] })
-            d->prepare (delaySize);
+    {
+        crumbleDelay[ch].prepare (delaySize);
+        alignDry[ch].prepare (delaySize);
+    }
 
     for (auto& f : noiseFilt)
         f.reset();
     phase = 0.0;
+    tremPhase = 0.0;
 
     for (int ch = 0; ch < 2; ++ch)
     {
@@ -159,21 +176,22 @@ void CrumbleProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     bucketPeak[0] = bucketPeak[1] = 0.0f;
 }
 
-void CrumbleProcessor::updateCrossovers (float lowCut, float highCut)
+void CrumbleProcessor::updateFilters (float lowCut, float highCut)
 {
     const float nyqLimit = (float) (0.45 * sr);
-    lowCut = juce::jlimit (20.0f, nyqLimit * 0.5f, lowCut);
-    highCut = juce::jlimit (lowCut * 1.25f, nyqLimit, highCut);
+    lowCut = juce::jlimit (20.0f, nyqLimit, lowCut);
+    highCut = juce::jlimit (20.0f, nyqLimit, highCut);
 
     if (std::abs (lowCut - currentLowCut) > 0.01f)
     {
-        xLow.setCutoffFrequency (lowCut);
+        hp1.setCutoffFrequency (lowCut);
+        hp2.setCutoffFrequency (lowCut);
         currentLowCut = lowCut;
     }
     if (std::abs (highCut - currentHighCut) > 0.01f)
     {
-        xHigh.setCutoffFrequency (highCut);
-        apLow.setCutoffFrequency (highCut);
+        lp1.setCutoffFrequency (highCut);
+        lp2.setCutoffFrequency (highCut);
         currentHighCut = highCut;
     }
 }
@@ -222,6 +240,44 @@ void CrumbleProcessor::pushToScope (float left, float right)
     }
 }
 
+// Drive -> Squash (OTT-style up/down compression in 3 sub-bands), measured for auto gain
+float CrumbleProcessor::colorStage (int ch, float x, float driveGain, float driveBlend, float squash, float makeup,
+                                    float attCoef, float relCoef, float rmsCoef)
+{
+    float y = x + (std::tanh (driveGain * x) - x) * driveBlend;
+
+    float s0, r, s1, s2;
+    sq1.processSample (ch, y, s0, r);
+    sq2.processSample (ch, r, s1, s2);
+    s0 = sqAp.processSample (ch, s0);
+
+    // Written as "signal + band * (gain - 1)", so with Squash at 0 the signal is exactly unchanged
+    const float bands[3] = { s0, s1, s2 };
+    float squashed = y;
+    for (int b = 0; b < 3; ++b)
+    {
+        const float level = std::abs (bands[b]);
+        float& env = sqEnv[ch][b];
+        env += (level > env ? attCoef : relCoef) * (level - env);
+
+        const float envDb = gainToDb (env);
+        float target = 0.0f;
+        if (envDb > kDownThreshold)
+            target = (kDownThreshold + (envDb - kDownThreshold) / kDownRatio) - envDb;
+        else if (envDb < kUpThreshold && envDb > kFloorDb)
+            target = juce::jmin (kUpMaxDb, (kUpThreshold + (envDb - kUpThreshold) / kUpRatio) - envDb);
+
+        float& g = sqGainDb[ch][b];
+        g += 0.01f * (target - g);
+        squashed += bands[b] * (dbToGain (g * squash) * makeup - 1.0f);
+    }
+    y = squashed;
+
+    agIn[ch]  += rmsCoef * (x * x - agIn[ch]);
+    agOut[ch] += rmsCoef * (y * y - agOut[ch]);
+    return y * agGain;
+}
+
 void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -235,12 +291,13 @@ void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     const float freq = pFreq->load();
     const float amount = pAmount->load() / 100.0f;
     const bool autoGain = pAutoGain->load() > 0.5f;
+    const bool colorOnAll = juce::roundToInt (pColorTarget->load()) == 1;
 
     updateNoiseFilters (freq, pTexture->load() / 100.0f);
     const float lowCutValue = pLowCut->load(), highCutValue = pHighCut->load();
-    updateCrossovers (lowCutValue, highCutValue);
-    const bool lowOff  = lowCutValue <= 20.05f;
-    const bool highOff = highCutValue >= 19990.0f;
+    updateFilters (lowCutValue, highCutValue);
+    const bool lowOn  = lowCutValue > 20.05f;
+    const bool highOn = highCutValue < 19990.0f;
 
     depthSmooth.setTargetValue (amount * amount * (float) (maxDepthSeconds * sr));
     mixSmooth.setTargetValue (pMix->load() / 100.0f);
@@ -249,10 +306,13 @@ void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     outSmooth.setTargetValue (dbToGain (pOutput->load()));
     stereoSmooth.setTargetValue (pStereo->load() / 100.0f);
 
-    // Sine rate: free (Frequency knob) or synced to the host tempo
     const double twoPi = juce::MathConstants<double>::twoPi;
-    double sineHz = freq;
-    if (sineMode && pSync->load() > 0.5f)
+    const double phaseInc = twoPi * (double) freq / sr;
+
+    // Sync: the effect fades in and out (tremolo) at a tempo-locked rate
+    const bool sync = pSync->load() > 0.5f;
+    double tremInc = 0.0;
+    if (sync)
     {
         const int rateIdx = juce::jlimit (0, rateNames.size() - 1, juce::roundToInt (pRate->load()));
         const double beatsPerCycle = kRateBeats[rateIdx];
@@ -267,13 +327,12 @@ void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
                     if (auto ppq = pos->getPpqPosition())
                     {
                         const double cycles = *ppq / beatsPerCycle;
-                        phase = twoPi * (cycles - std::floor (cycles));
+                        tremPhase = cycles - std::floor (cycles);
                     }
             }
         }
-        sineHz = bpm / 60.0 / beatsPerCycle;
+        tremInc = bpm / 60.0 / beatsPerCycle / sr;
     }
-    const double phaseInc = twoPi * sineHz / sr;
 
     const float attCoef = 1.0f - std::exp (-1.0f / (0.002f * (float) sr));
     const float relCoef = 1.0f - std::exp (-1.0f / (0.060f * (float) sr));
@@ -282,15 +341,27 @@ void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     const float agUp    = 1.0f - std::exp (-1.0f / (0.150f * (float) sr));   // turn up slowly
 
     float* data[2] = { buffer.getWritePointer (0), numCh > 1 ? buffer.getWritePointer (1) : nullptr };
+    float lastLevel = 1.0f;
 
     for (int i = 0; i < numSamples; ++i)
     {
-        const float depth  = depthSmooth.getNextValue();
         const float mix    = mixSmooth.getNextValue();
         const float drive  = driveSmooth.getNextValue();
         const float squash = squashSmooth.getNextValue();
         const float outG   = outSmooth.getNextValue();
         const float st     = stereoSmooth.getNextValue();
+
+        // Tremolo: full effect on the beat, dips to nothing halfway through the cycle
+        float level = 1.0f;
+        if (sync)
+        {
+            level = (float) (0.5 + 0.5 * std::cos (twoPi * tremPhase));
+            tremPhase += tremInc;
+            if (tremPhase >= 1.0)
+                tremPhase -= 1.0;
+        }
+        lastLevel = level;
+        const float depth = depthSmooth.getNextValue() * level;
 
         // Modulation for left / right
         float mod[2];
@@ -319,82 +390,38 @@ void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
         const float driveGain = dbToGain (drive * 30.0f);
         const float driveBlend = juce::jmin (1.0f, drive * 10.0f);
+        const float makeup = dbToGain (kSquashMakeupDb * squash);
 
         for (int ch = 0; ch < numCh; ++ch)
         {
             const float x = data[ch][i];
 
-            // 1. Split into bands
-            // A cut at its end stop is "Off": that split is skipped so the sound stays untouched there
-            float lo, rest, mid, hi;
-            xLow.processSample (ch, x, lo, rest);
-            if (lowOff)
-            {
-                lo = 0.0f;
-                rest = x;
-            }
-            xHigh.processSample (ch, rest, mid, hi);
-            if (highOff)
-            {
-                mid = rest;
-                hi = 0.0f;
-            }
-            const float loAp = apLow.processSample (ch, lo);
-            if (! highOff)
-                lo = loAp;
+            // 1. Crumble
+            crumbleDelay[ch].push (x);
+            float wet = crumbleDelay[ch].read (depth * (0.5f + 0.5f * mod[ch]));
 
-            // 2. Crumble the middle band
-            crumbleDelay[ch].push (mid);
-            const float crumbled = crumbleDelay[ch].read (depth * (0.5f + 0.5f * mod[ch]));
-
-            // Keep the clean parts in time with the average crumble delay
-            const float align = depth * 0.5f;
-            alignLow[ch].push (lo);
-            alignHigh[ch].push (hi);
+            // Keep the dry signal in time with the average crumble delay
             alignDry[ch].push (x);
-            lo = alignLow[ch].read (align);
-            hi = alignHigh[ch].read (align);
-            const float dry = alignDry[ch].read (align);
+            const float dry = alignDry[ch].read (depth * 0.5f);
 
-            // 3. Drive
-            float y = crumbled + (std::tanh (driveGain * crumbled) - crumbled) * driveBlend;
+            // 2. Color on the wet signal
+            if (! colorOnAll)
+                wet = colorStage (ch, wet, driveGain, driveBlend, squash, makeup, attCoef, relCoef, rmsCoef);
 
-            // 4. Squash: upward + downward compression in 3 sub-bands
-            float s0, r, s1, s2;
-            sq1.processSample (ch, y, s0, r);
-            sq2.processSample (ch, r, s1, s2);
-            s0 = sqAp.processSample (ch, s0);
-            // Written as "signal + band * (gain - 1)", so with Squash at 0 the signal is exactly unchanged
-            float bands[3] = { s0, s1, s2 };
-            const float makeup = dbToGain (kSquashMakeupDb * squash);
-            float squashed = y;
-            for (int b = 0; b < 3; ++b)
-            {
-                const float level = std::abs (bands[b]);
-                float& env = sqEnv[ch][b];
-                env += (level > env ? attCoef : relCoef) * (level - env);
+            // 3. Wet filters (always running, so turning them on is smooth)
+            const float hp = hp2.processSample (ch, hp1.processSample (ch, wet));
+            if (lowOn)
+                wet = hp;
+            const float lp = lp2.processSample (ch, lp1.processSample (ch, wet));
+            if (highOn)
+                wet = lp;
 
-                const float envDb = gainToDb (env);
-                float target = 0.0f;
-                if (envDb > kDownThreshold)
-                    target = (kDownThreshold + (envDb - kDownThreshold) / kDownRatio) - envDb;
-                else if (envDb < kUpThreshold && envDb > kFloorDb)
-                    target = juce::jmin (kUpMaxDb, (kUpThreshold + (envDb - kUpThreshold) / kUpRatio) - envDb);
+            // 4. Mix, then color on the whole signal if chosen
+            float out = dry + (wet - dry) * mix;
+            if (colorOnAll)
+                out = colorStage (ch, out, driveGain, driveBlend, squash, makeup, attCoef, relCoef, rmsCoef);
 
-                float& g = sqGainDb[ch][b];
-                g += 0.01f * (target - g);
-                squashed += bands[b] * (dbToGain (g * squash) * makeup - 1.0f);
-            }
-            y = squashed;
-
-            // 5. Auto gain: match the level of the crumbled band before Drive and Squash
-            agIn[ch]  += rmsCoef * (crumbled * crumbled - agIn[ch]);
-            agOut[ch] += rmsCoef * (y * y - agOut[ch]);
-            y *= agGain;
-
-            // 6. Recombine, mix with dry, output
-            const float wet = lo + y + hi;
-            data[ch][i] = (dry + (wet - dry) * mix) * outG;
+            data[ch][i] = out * outG;
         }
 
         // Update auto gain once per sample from both channels
@@ -412,6 +439,8 @@ void CrumbleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
         pushToScope (data[0][i], numCh > 1 ? data[1][i] : data[0][i]);
     }
+
+    effectLevel.store (lastLevel, std::memory_order_relaxed);
 }
 
 void CrumbleProcessor::getStateInformation (juce::MemoryBlock& destData)

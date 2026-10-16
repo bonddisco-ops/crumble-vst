@@ -9,9 +9,10 @@
 // Crumble by Primal Rage Lab
 //
 // Signal flow:
-//   input -> 3-band split (Low Cut / High Cut)
-//         -> middle band: Crumble (modulated micro delay) -> Drive -> Squash (OTT-style) -> auto gain
-//         -> + low and high bands (time aligned) -> Mix with dry -> Output
+//   wet = Crumble (modulated micro delay, optional tempo tremolo)
+//         -> [Color: Drive -> Squash -> auto gain, when set to "Wet signal"]
+//         -> Low Cut / High Cut filters
+//   out = Mix (dry + wet) -> [Color, when set to "Whole signal"] -> Output
 class CrumbleProcessor : public juce::AudioProcessor
 {
 public:
@@ -53,6 +54,9 @@ public:
     Scope scope;
 
     static const juce::StringArray rateNames;
+
+    // Current tremolo level of the effect (0..1), for the display
+    std::atomic<float> effectLevel { 1.0f };
     static constexpr double maxDepthSeconds = 0.002;   // 2 ms at Amount 100 %
 
 private:
@@ -101,7 +105,9 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void updateNoiseFilters (float freq, float texture);
     float filteredNoise (int source);
-    void updateCrossovers (float lowCut, float highCut);
+    void updateFilters (float lowCut, float highCut);
+    float colorStage (int ch, float x, float driveGain, float driveBlend, float squash, float makeup,
+                      float attCoef, float relCoef, float rmsCoef);
     void pushToScope (float left, float right);
 
     // Parameters
@@ -119,12 +125,14 @@ private:
     std::atomic<float>* pMix = nullptr;
     std::atomic<float>* pOutput = nullptr;
     std::atomic<float>* pAutoGain = nullptr;
+    std::atomic<float>* pColorTarget = nullptr;
 
     double sr = 44100.0;
 
-    // Band split: low | mid | high, plus an allpass so the low band matches the phase of the others
-    juce::dsp::LinkwitzRileyFilter<float> xLow, xHigh, apLow;
+    // Wet filters: two cascaded state-variable filters each = 24 dB/oct Butterworth
+    juce::dsp::StateVariableTPTFilter<float> hp1, hp2, lp1, lp2;
     float currentLowCut = -1.0f, currentHighCut = -1.0f;
+    double tremPhase = 0.0;
 
     // Squash: three sub-bands inside the mid band
     juce::dsp::LinkwitzRileyFilter<float> sq1, sq2, sqAp;
@@ -133,7 +141,7 @@ private:
 
     // Crumble
     DelayLine crumbleDelay[2];
-    DelayLine alignLow[2], alignHigh[2], alignDry[2];
+    DelayLine alignDry[2];
     Biquad noiseFilt[3];               // 0 = shared, 1 = left only, 2 = right only
     float noiseGain = 1.0f;
     juce::Random rng;

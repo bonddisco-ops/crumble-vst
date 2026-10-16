@@ -82,9 +82,9 @@ private:
     juce::Image background, logo;
     WaveDisplay wave;
 
-    juce::ComboBox modeBox, rateBox;
+    juce::ComboBox modeBox, rateBox, colorTargetBox;
     juce::ToggleButton syncButton { "Sync" }, autoGainButton { "Auto gain" };
-    std::unique_ptr<ComboBoxAttachment> modeAttachment, rateAttachment;
+    std::unique_ptr<ComboBoxAttachment> modeAttachment, rateAttachment, colorTargetAttachment;
     std::unique_ptr<ButtonAttachment> syncAttachment, autoGainAttachment;
 
     Knob freq, texture, amount, stereo, lowCut, highCut, drive, squash, mix, output;

@@ -80,13 +80,20 @@ void CrumbleLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     g.setColour (Colours::white.withAlpha (0.08f));
     g.strokePath (track, arcStroke);
 
-    if (pos > 0.002f)
+    // A "reverse" knob (High Cut) lights up from its right end: it is off fully clockwise
+    const bool reverse = (bool) slider.getProperties().getWithDefault ("reverseArc", false);
+    const float amountLit = reverse ? 1.0f - pos : pos;
+    if (amountLit > 0.002f)
     {
+        const float valueAngle = startAngle + (endAngle - startAngle) * pos;
         Path value;
-        value.addCentredArc (cx, cy, R + 6.0f, R + 6.0f, 0.0f, startAngle, startAngle + (endAngle - startAngle) * pos, true);
-        g.setColour (glow (pos, 0.35f));
+        if (reverse)
+            value.addCentredArc (cx, cy, R + 6.0f, R + 6.0f, 0.0f, valueAngle, endAngle, true);
+        else
+            value.addCentredArc (cx, cy, R + 6.0f, R + 6.0f, 0.0f, startAngle, valueAngle, true);
+        g.setColour (glow (amountLit, 0.35f));
         g.strokePath (value, PathStrokeType (6.0f, PathStrokeType::curved, PathStrokeType::rounded));
-        g.setColour (glow (pos));
+        g.setColour (glow (amountLit));
         g.strokePath (value, arcStroke);
     }
 
@@ -227,7 +234,7 @@ void WaveDisplay::paint (juce::Graphics& g)
     g.saveState();
     g.reduceClipRegion (r.reduced (1.0f).toNearestInt());
 
-    const float amount = pAmount->load() / 100.0f;
+    const float amount = pAmount->load() / 100.0f * proc.effectLevel.load (std::memory_order_relaxed);
     const float drive  = pDrive->load() / 100.0f;
     const float squash = pSquash->load() / 100.0f;
     const float stereo = pStereo->load() / 100.0f;
@@ -364,6 +371,10 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     prepareCombo (rateBox);
     rateAttachment = std::make_unique<ComboBoxAttachment> (proc.apvts, "rate", rateBox);
 
+    colorTargetBox.addItemList (proc.apvts.getParameter ("colortarget")->getAllValueStrings(), 1);
+    prepareCombo (colorTargetBox);
+    colorTargetAttachment = std::make_unique<ComboBoxAttachment> (proc.apvts, "colortarget", colorTargetBox);
+
     prepareButton (syncButton);
     syncAttachment = std::make_unique<ButtonAttachment> (proc.apvts, "sync", syncButton);
     prepareButton (autoGainButton);
@@ -375,12 +386,13 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     initKnob (stereo,  "Stereo",    "stereo");
     initKnob (lowCut,  "Low Cut",   "lowcut");
     initKnob (highCut, "High Cut",  "highcut");
+    highCut.slider.getProperties().set ("reverseArc", true);
     initKnob (drive,   "Drive",     "drive");
     initKnob (squash,  "Squash",    "squash");
     initKnob (mix,     "Mix",       "mix");
     initKnob (output,  "Output",    "output");
 
-    groups = { { "CRUMBLE", {} }, { "BAND", {} }, { "COLOR", {} }, { "OUTPUT", {} } };
+    groups = { { "CRUMBLE", {} }, { "WET FILTER", {} }, { "COLOR", {} }, { "OUTPUT", {} } };
 
     setSize (kEditorW, kEditorH);
     buildBackground();
@@ -400,9 +412,7 @@ void CrumbleEditor::timerCallback()
     const bool sine = juce::roundToInt (proc.apvts.getRawParameterValue ("mode")->load()) == 0;
     const bool sync = proc.apvts.getRawParameterValue ("sync")->load() > 0.5f;
 
-    syncButton.setEnabled (sine);
-    rateBox.setEnabled (sine && sync);
-    freq.slider.setEnabled (! (sine && sync));
+    rateBox.setEnabled (sync);
     texture.slider.setEnabled (! sine);
 }
 
@@ -510,6 +520,7 @@ void CrumbleEditor::resized()
     syncButton.setBounds (crumble.getX() + 122, rowY, 72, 24);
     rateBox.setBounds (crumble.getX() + 196, rowY, 80, 24);
     autoGainButton.setBounds (groups[3].area.getX() + 12, rowY, 120, 24);
+    colorTargetBox.setBounds (groups[2].area.getX() + 12, rowY, groups[2].area.getWidth() - 24, 24);
 
     auto placeKnobs = [] (const juce::Rectangle<int>& area, std::initializer_list<Knob*> knobs)
     {
