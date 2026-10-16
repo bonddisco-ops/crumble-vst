@@ -5,7 +5,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 # Static MSVC runtime: the plugin does not depend on the host's C++ runtime DLLs
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Crumble VERSION 1.0.0)
+project(Crumble VERSION 2.0.0)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -15,8 +15,10 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
 
+juce_add_binary_data(CrumbleAssets SOURCES Assets/logo.png)
+
 juce_add_plugin(Crumble
-    COMPANY_NAME "Crumble"
+    COMPANY_NAME "Primal Rage Lab"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -38,5 +40,7 @@ target_compile_definitions(Crumble PUBLIC
 
 target_link_libraries(Crumble
     PRIVATE juce::juce_audio_utils
+            juce::juce_dsp
+            CrumbleAssets
     PUBLIC juce::juce_recommended_config_flags
            juce::juce_recommended_warning_flags)

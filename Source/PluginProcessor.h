@@ -1,10 +1,17 @@
 #pragma once
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <vector>
+#include <juce_dsp/juce_dsp.h>
+#include <array>
+#include <atomic>
 #include <cmath>
+#include <vector>
 
-// Crumble: a very short delay line whose delay time is shaken by noise or a sine.
-// The fast modulation smears and "crumbles" the high end of the sound.
+// Crumble by Primal Rage Lab
+//
+// Signal flow:
+//   input -> 3-band split (Low Cut / High Cut)
+//         -> middle band: Crumble (modulated micro delay) -> Drive -> Squash (OTT-style) -> auto gain
+//         -> + low and high bands (time aligned) -> Mix with dry -> Output
 class CrumbleProcessor : public juce::AudioProcessor
 {
 public:
@@ -36,6 +43,16 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Waveform for the display: one value per bucket (the sample with the largest magnitude).
+    struct Scope
+    {
+        static constexpr int size = 512;
+        float data[2][size] {};
+        std::atomic<int> writeCount { 0 };
+    };
+    Scope scope;
+
+    static const juce::StringArray rateNames;
     static constexpr double maxDepthSeconds = 0.002;   // 2 ms at Amount 100 %
 
 private:
@@ -82,22 +99,55 @@ private:
     };
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
-    void updateNoiseFilters (float freq, float width);
-    float nextNoise (int ch);
+    void updateNoiseFilters (float freq, float texture);
+    float filteredNoise (int source);
+    void updateCrossovers (float lowCut, float highCut);
+    void pushToScope (float left, float right);
 
-    std::atomic<float>* pMode   = nullptr;
-    std::atomic<float>* pFreq   = nullptr;
-    std::atomic<float>* pWidth  = nullptr;
+    // Parameters
+    std::atomic<float>* pMode = nullptr;
+    std::atomic<float>* pFreq = nullptr;
+    std::atomic<float>* pSync = nullptr;
+    std::atomic<float>* pRate = nullptr;
+    std::atomic<float>* pTexture = nullptr;
     std::atomic<float>* pAmount = nullptr;
-    std::atomic<float>* pMix    = nullptr;
+    std::atomic<float>* pStereo = nullptr;
+    std::atomic<float>* pLowCut = nullptr;
+    std::atomic<float>* pHighCut = nullptr;
+    std::atomic<float>* pDrive = nullptr;
+    std::atomic<float>* pSquash = nullptr;
+    std::atomic<float>* pMix = nullptr;
+    std::atomic<float>* pOutput = nullptr;
+    std::atomic<float>* pAutoGain = nullptr;
 
     double sr = 44100.0;
-    DelayLine delays[2];
-    Biquad noiseFilt[2];
+
+    // Band split: low | mid | high, plus an allpass so the low band matches the phase of the others
+    juce::dsp::LinkwitzRileyFilter<float> xLow, xHigh, apLow;
+    float currentLowCut = -1.0f, currentHighCut = -1.0f;
+
+    // Squash: three sub-bands inside the mid band
+    juce::dsp::LinkwitzRileyFilter<float> sq1, sq2, sqAp;
+    float sqEnv[2][3] {};
+    float sqGainDb[2][3] {};
+
+    // Crumble
+    DelayLine crumbleDelay[2];
+    DelayLine alignLow[2], alignHigh[2], alignDry[2];
+    Biquad noiseFilt[3];               // 0 = shared, 1 = left only, 2 = right only
     float noiseGain = 1.0f;
     juce::Random rng;
     double phase = 0.0;
-    juce::SmoothedValue<float> depthSmooth, mixSmooth;
+
+    // Auto gain for Drive + Squash
+    float agIn[2] {}, agOut[2] {};
+    float agGain = 1.0f;
+
+    juce::SmoothedValue<float> depthSmooth, mixSmooth, driveSmooth, squashSmooth, outSmooth, stereoSmooth;
+
+    // Scope decimation
+    int bucketLen = 32, bucketPos = 0;
+    float bucketPeak[2] {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrumbleProcessor)
 };
