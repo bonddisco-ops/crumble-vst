@@ -753,6 +753,7 @@ void CrumbleProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         }
 
         // Display data
+        const float grNow = (st.compMode == 1 && st.compF > 0.0001f) ? glue.grDb : 0.0f;
         const float monoOut = numCh > 1 ? 0.5f * (data[0][i] + data[1][i]) : data[0][i];
         spectrum.in[specPos] = monoIn;
         spectrum.out[specPos] = monoOut;
@@ -763,6 +764,7 @@ void CrumbleProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
             bucketHi = bucketLo = monoOut;
             bucketIn = std::abs (monoIn);
             bucketPre = preClipPeak;
+            bucketGr = grNow;
         }
         else
         {
@@ -770,6 +772,7 @@ void CrumbleProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
             bucketLo = jmin (bucketLo, monoOut);
             bucketIn = jmax (bucketIn, std::abs (monoIn));
             bucketPre = jmax (bucketPre, preClipPeak);
+            bucketGr = jmin (bucketGr, grNow);
         }
         if (++bucketPos >= bucketLen)
         {
@@ -779,11 +782,32 @@ void CrumbleProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
             scope.lo[idx] = bucketLo;
             scope.in[idx] = bucketIn;
             scope.preClip[idx] = bucketPre;
+            scope.gr[idx] = bucketGr;
             scope.writeCount.store (count + 1, std::memory_order_release);
             bucketPos = 0;
         }
     }
     spectrum.writePos.store (specPos, std::memory_order_release);
+
+    // Compressor meters
+    {
+        const bool active = st.compF > 0.0001f;
+        compActive.store (active, std::memory_order_relaxed);
+        const bool isGlue = active && st.compMode == 1, isOtt = active && st.compMode == 0;
+        glueGrDb.store (isGlue ? glue.grDb : 0.0f, std::memory_order_relaxed);
+        glueLevelDb.store (isGlue ? gainToDb (glue.env) : -100.0f, std::memory_order_relaxed);
+        for (int b = 0; b < 3; ++b)
+        {
+            float g = 0.0f, e = 0.0f;
+            for (int ch = 0; ch < numCh; ++ch)
+            {
+                g += ott.gdb[ch][b] / (float) numCh;
+                e = jmax (e, ott.env[ch][b]);
+            }
+            ottGainDb[b].store (isOtt ? g * st.ottDepth : 0.0f, std::memory_order_relaxed);
+            ottLevelDb[b].store (isOtt ? gainToDb (e) : -100.0f, std::memory_order_relaxed);
+        }
+    }
 
     for (int ch = 0; ch < 2; ++ch)
     {
@@ -798,6 +822,11 @@ void CrumbleProcessor::getStateInformation (MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty ("presetName", presets.getCurrentName(), nullptr);
+    if (editorW.load() > 0)
+    {
+        state.setProperty ("uiW", editorW.load(), nullptr);
+        state.setProperty ("uiH", editorH.load(), nullptr);
+    }
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -809,6 +838,13 @@ void CrumbleProcessor::setStateInformation (const void* data, int sizeInBytes)
         {
             auto tree = ValueTree::fromXml (*xml);
             presets.setCurrentNameFromState (tree.getProperty ("presetName").toString());
+            if ((int) tree.getProperty ("uiW", 0) > 0)
+            {
+                editorW.store ((int) tree.getProperty ("uiW"));
+                editorH.store ((int) tree.getProperty ("uiH"));
+            }
+            tree.removeProperty ("uiW", nullptr);
+            tree.removeProperty ("uiH", nullptr);
             apvts.replaceState (tree);
         }
 }

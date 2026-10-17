@@ -6,7 +6,7 @@
 #include "Dsp.h"
 #include "PresetManager.h"
 
-// Crumble 3.1 by Primal Rage Lab
+// Crumble 3.2 by Primal Rage Lab
 //
 //  IN -> PRE filter (FX: only what goes into the effect / All: everything)
 //     -> [Crumble <-> Bitcrush] -> effect = processed - clean
@@ -52,6 +52,7 @@ public:
     {
         static constexpr int size = 65536;            // 1 ms buckets -> about 65 s of history
         float hi[size] {}, lo[size] {}, in[size] {}, preClip[size] {};
+        float gr[size] {};                            // Glue gain reduction in dB (0 or below)
         std::atomic<int> writeCount { 0 };
         // Beat clock: the beat position at bucket number 'beatCount', and the tempo
         std::atomic<int> beatCount { 0 };
@@ -69,6 +70,14 @@ public:
     Spectrum spectrum;
 
     std::atomic<float> inPeak[2] {}, outPeak[2] {};
+
+    // Compressor meters for the screen
+    std::atomic<float> glueGrDb { 0.0f }, glueLevelDb { -100.0f };     // Glue: reduction now, detector level
+    std::atomic<float> ottGainDb[3] {}, ottLevelDb[3] {};                  // OTT per band: applied gain (+ up / - down), level
+    std::atomic<bool> compActive { false };
+
+    // Editor window size (kept while the plugin lives and saved with the project)
+    std::atomic<int> editorW { 0 }, editorH { 0 };
     std::atomic<double> currentSampleRate { 44100.0 };
 
     static constexpr double maxDepthSeconds = 0.002;   // crumble depth at Amount 100 %
@@ -167,7 +176,7 @@ private:
 
     // Scope decimation
     int bucketLen = 48, bucketPos = 0;
-    float bucketHi = 0.0f, bucketLo = 0.0f, bucketIn = 0.0f, bucketPre = 0.0f;
+    float bucketHi = 0.0f, bucketLo = 0.0f, bucketIn = 0.0f, bucketPre = 0.0f, bucketGr = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrumbleProcessor)
 };

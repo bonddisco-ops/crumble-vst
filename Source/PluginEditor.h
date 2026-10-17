@@ -10,7 +10,7 @@ public:
     ~CrumbleEditor() override;
 
     void resized() override;
-    void paint (juce::Graphics&) override {}
+    void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff0b0b0d)); }
 
     static constexpr int baseW = 1160, baseH = 850;
 
@@ -40,6 +40,9 @@ private:
     void applyTheme (const Theme&, bool remember);
     void applyHelp();
     void setScale (float scale, bool remember);
+    void computeLayout();
+    void layoutInside();
+    void showComp();
     void showSettingsMenu();
     void buildBackground();
     void addCombo (juce::Component& parent, juce::ComboBox&, const char* paramId, const juce::StringArray& items,
@@ -63,6 +66,15 @@ private:
     Content content { *this };
     juce::Image background;
     float scale = 1.0f;
+
+    // Layout in content coordinates; the content is scaled to fit the window and stretches to its shape
+    int lw = baseW, lh = baseH;
+    int x0 = 96, x1 = 1064, r1y = 449, r2y = 661;
+    int wCrumble = 428, wBit = 508, wColor = 196, wComp = 312, wTrem = 196, wMix = 102, wClip = 102, gap2 = 15;
+    bool constructed = false, bgDirty = false;
+    double bgDirtyMs = 0.0, openedMs = 0.0;
+    int bgW = 0, bgH = 0;
+    int lastCompOn = -1, lastCompMode = -1;
     bool helpOn = true;
     Help::Lang lang = Help::Lang::en;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow;

@@ -5,11 +5,8 @@ using namespace juce;
 
 namespace
 {
-    constexpr int X0 = 96, X1 = 1064;
-    constexpr int row1Y = 449, row1H = 200, row2Y = 661, row2H = 170;
-    constexpr int crumbleW = 428, bitW = 508;
-    constexpr int colorW = 196, compW = 312, tremW = 196, mixW = 102, clipW = 102;
-    constexpr int row2Gap = (X1 - X0 - (colorW + compW + tremW + mixW + clipW)) / 4;
+    constexpr int row1H = 200, row2H = 170;
+    constexpr int minW = 696, minH = 510, maxW = 4000, maxH = 3000;
     const Rectangle<int> logoArea (96, 10, 58, 60);
     const Rectangle<int> titleArea (96, 10, 340, 60);
     bool askedThisRun = false;
@@ -111,6 +108,8 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     glueAttack.init (compBlock, apvts, "Attack", ParamIDs::glueAttack, true);
     glueRelease.init (compBlock, apvts, "Release", ParamIDs::glueRelease, true);
     compMix.init (compBlock, apvts, "Mix", ParamIDs::compMix, true);
+    for (auto* k : { &ottDepth, &ottTime, &ottUp, &ottDown, &glueThresh, &glueRatio, &glueAttack, &glueRelease, &compMix })
+        k->slider.onDragStart = [this] { if (compBlock.isOn()) showComp(); };
 
     // Tremolo
     addCombo (tremBlock, trShapeBox, ParamIDs::trShape, Tables::trShapes, trShapeAtt, true);
@@ -197,13 +196,37 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     applyTheme (Theme::byName (loadSetting ("theme", "Asphalt")), false);
     welcome.setLang (lang);
     applyHelp();
-    scale = jlimit (0.6f, 2.0f, loadSetting ("scale", "1.0").getFloatValue());
+    // Window size: this plugin's last size, else the last size used anywhere, else the old scale setting
+    int w = proc.editorW.load(), h = proc.editorH.load();
+    if (w <= 0 || h <= 0)
+    {
+        w = loadSetting ("width", "0").getIntValue();
+        h = loadSetting ("height", "0").getIntValue();
+    }
+    if (w <= 0 || h <= 0)
+    {
+        const float sc = jlimit (0.6f, 2.0f, loadSetting ("scale", "1.0").getFloatValue());
+        w = roundToInt (baseW * sc);
+        h = roundToInt (baseH * sc);
+    }
+    w = jlimit (minW, maxW, w);
+    h = jlimit (minH, maxH, h);
 
+    // Free resizing: any shape; the screen and the blocks stretch to fill it
     setResizable (true, true);
-    setResizeLimits ((int) (baseW * 0.6f), (int) (baseH * 0.6f), baseW * 2, baseH * 2);
+    setResizeLimits (minW, minH, maxW, maxH);
     if (auto* c = getConstrainer())
-        c->setFixedAspectRatio ((double) baseW / (double) baseH);
-    setSize (roundToInt (baseW * scale), roundToInt (baseH * scale));
+        c->setFixedAspectRatio (0.0);
+    setSize (w, h);
+    constructed = true;
+    openedMs = Time::getMillisecondCounterHiRes();
+
+    // Some hosts resize the window right after opening it; put our size back once
+    Timer::callAfterDelay (350, [safe = Component::SafePointer<CrumbleEditor> (this), w, h]
+    {
+        if (safe != nullptr && (safe->getWidth() != w || safe->getHeight() != h))
+            safe->setSize (w, h);
+    });
 
     if (loadSetting ("tour", "") != "never" && ! askedThisRun)
     {
@@ -218,9 +241,21 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
 CrumbleEditor::~CrumbleEditor()
 {
     stopTimer();
-    saveSetting ("scale", String (scale, 3));
+    if (proc.editorW.load() > 0)
+    {
+        saveSetting ("width", String (proc.editorW.load()));
+        saveSetting ("height", String (proc.editorH.load()));
+    }
     tooltipWindow.reset();
     setLookAndFeel (nullptr);
+}
+
+void CrumbleEditor::showComp()
+{
+    if (roundToInt (proc.apvts.getRawParameterValue (ParamIDs::compMode)->load()) == 1)
+        scope.setView (ScopeView::View::wave);
+    else
+        scope.showOtt();
 }
 
 void CrumbleEditor::setChoice (const char* id, int index)
@@ -236,12 +271,12 @@ void CrumbleEditor::setChoice (const char* id, int index)
 //==============================================================================
 int CrumbleEditor::widthOf (const Block* b) const
 {
-    if (b == &crumbleBlock) return crumbleW;
-    if (b == &bitBlock) return bitW;
-    if (b == &colorBlock) return colorW;
-    if (b == &compBlock) return compW;
-    if (b == &tremBlock) return tremW;
-    return mixW;
+    if (b == &crumbleBlock) return wCrumble;
+    if (b == &bitBlock) return wBit;
+    if (b == &colorBlock) return wColor;
+    if (b == &compBlock) return wComp;
+    if (b == &tremBlock) return wTrem;
+    return wMix;
 }
 
 Block* CrumbleEditor::movable (int index)
@@ -251,21 +286,21 @@ Block* CrumbleEditor::movable (int index)
 
 int CrumbleEditor::row2SlotX (const int order[3], int index) const
 {
-    const int widths[3] = { colorW, compW, tremW };
-    int x = X0;
+    const int widths[3] = { wColor, wComp, wTrem };
+    int x = x0;
     for (int k = 0; k < 3; ++k)
     {
         if (order[k] == index)
             return x;
-        x += widths[order[k]] + row2Gap;
+        x += widths[order[k]] + gap2;
     }
     return x;
 }
 
 void CrumbleEditor::layoutRow1 (bool bitFirst, bool animate, const Block* skip)
 {
-    const Rectangle<int> crumbleR (bitFirst ? X1 - crumbleW : X0, row1Y, crumbleW, row1H);
-    const Rectangle<int> bitR (bitFirst ? X0 : X1 - bitW, row1Y, bitW, row1H);
+    const Rectangle<int> crumbleR (bitFirst ? x1 - wCrumble : x0, r1y, wCrumble, row1H);
+    const Rectangle<int> bitR (bitFirst ? x0 : x1 - wBit, r1y, wBit, row1H);
     auto& anim = Desktop::getInstance().getAnimator();
     for (auto [blk, r] : { std::pair<Block*, Rectangle<int>> { &crumbleBlock, crumbleR }, { &bitBlock, bitR } })
     {
@@ -284,12 +319,12 @@ void CrumbleEditor::layoutRow2 (const int order[3], bool animate, const Block* s
         auto* blk = movable (i);
         if (blk == skip)
             continue;
-        const Rectangle<int> r (row2SlotX (order, i), row2Y, widthOf (blk), row2H);
+        const Rectangle<int> r (row2SlotX (order, i), r2y, widthOf (blk), row2H);
         if (animate) anim.animateComponent (blk, r, 1.0f, 200, false, 1.0, 0.0);
         else         blk->setBounds (r);
     }
-    mixBlock.setBounds (X0 + colorW + compW + tremW + 3 * row2Gap, row2Y, mixW, row2H);
-    clipBlock.setBounds (X1 - clipW, row2Y, clipW, row2H);
+    mixBlock.setBounds (x0 + wColor + wComp + wTrem + 3 * gap2, r2y, wMix, row2H);
+    clipBlock.setBounds (x1 - wClip, r2y, wClip, row2H);
 }
 
 void CrumbleEditor::dragStart (Block& b)
@@ -306,12 +341,12 @@ void CrumbleEditor::dragMove (Block& b, int dx)
 {
     if (&b == &crumbleBlock || &b == &bitBlock)
     {
-        const int x = jlimit (X0, X1 - b.getWidth(), dragOriginX + dx);
-        b.setTopLeftPosition (x, row1Y);
+        const int x = jlimit (x0, x1 - b.getWidth(), dragOriginX + dx);
+        b.setTopLeftPosition (x, r1y);
         // Compare the dragged block with the other block's resting place
         const auto& other = (&b == &crumbleBlock) ? bitBlock : crumbleBlock;
-        const int otherCentre = (&other == &bitBlock) ? (tentativeBitFirst ? X0 + bitW / 2 : X1 - bitW / 2)
-                                                      : (tentativeBitFirst ? X1 - crumbleW / 2 : X0 + crumbleW / 2);
+        const int otherCentre = (&other == &bitBlock) ? (tentativeBitFirst ? x0 + wBit / 2 : x1 - wBit / 2)
+                                                      : (tentativeBitFirst ? x1 - wCrumble / 2 : x0 + wCrumble / 2);
         const bool draggedFirst = b.getBounds().getCentreX() < otherCentre;
         const bool newBitFirst = (&b == &bitBlock) ? draggedFirst : ! draggedFirst;
         if (newBitFirst != tentativeBitFirst)
@@ -322,8 +357,8 @@ void CrumbleEditor::dragMove (Block& b, int dx)
         return;
     }
 
-    const int maxX = X0 + colorW + compW + tremW + 2 * row2Gap - b.getWidth();
-    b.setTopLeftPosition (jlimit (X0, maxX, dragOriginX + dx), row2Y);
+    const int maxX = x0 + wColor + wComp + wTrem + 2 * gap2 - b.getWidth();
+    b.setTopLeftPosition (jlimit (x0, maxX, dragOriginX + dx), r2y);
     int idx[3] = { 0, 1, 2 };
     float centre[3];
     for (int i = 0; i < 3; ++i)
@@ -357,69 +392,128 @@ void CrumbleEditor::dragEnd (Block& b)
 }
 
 //==============================================================================
+void CrumbleEditor::computeLayout()
+{
+    x0 = 96;
+    x1 = lw - 96;
+    const int extraH = lh - baseH;
+    r1y = 449 + extraH;
+    r2y = 661 + extraH;
+    const int avail = x1 - x0;
+    wCrumble = roundToInt ((double) (avail - 32) * 428.0 / 936.0);
+    wBit = avail - 32 - wCrumble;
+    gap2 = 15;
+    wMix = wClip = 102;
+    const double k = (double) (avail - 4 * gap2 - wMix - wClip) / 704.0;
+    wColor = roundToInt (196.0 * k);
+    wTrem = roundToInt (196.0 * k);
+    wComp = avail - 4 * gap2 - wMix - wClip - wColor - wTrem;
+}
+
 void CrumbleEditor::resized()
 {
-    scale = (float) getWidth() / (float) baseW;
-    content.setTransform (AffineTransform::scale (scale));
-    content.setBounds (0, 0, baseW, baseH);
+    const float s = jmax (0.3f, jmin ((float) getWidth() / (float) baseW, (float) getHeight() / (float) baseH));
+    scale = s;
+    lw = jmax (baseW, (int) std::ceil ((float) getWidth() / s - 0.01f));
+    lh = jmax (baseH, (int) std::ceil ((float) getHeight() / s - 0.01f));
+    content.setTransform (AffineTransform::scale (s));
+    content.setBounds (0, 0, lw, lh);
+    computeLayout();
 
-    presetBar.setBounds (466, 24, 330, 30);
-    gear.setBounds (X1 - 40, 24, 40, 30);
-    scope.setBounds (X0, 80, X1 - X0, 357);
-    inCol.setBounds (10, 10, 72, baseH - 20);
-    outCol.setBounds (baseW - 82, 10, 72, baseH - 20);
-    about.setBounds (0, 0, baseW, baseH);
-    tour.setBounds (0, 0, baseW, baseH);
-    welcome.setBounds (0, 0, baseW, baseH);
+    presetBar.setBounds (x0 + 370 + (lw - baseW) / 2, 24, 330, 30);
+    gear.setBounds (x1 - 40, 24, 40, 30);
+    scope.setBounds (x0, 80, x1 - x0, 357 + (lh - baseH));
+    inCol.setBounds (10, 10, 72, lh - 20);
+    outCol.setBounds (lw - 82, 10, 72, lh - 20);
+    about.setBounds (0, 0, lw, lh);
+    tour.setBounds (0, 0, lw, lh);
+    welcome.setBounds (0, 0, lw, lh);
 
-    layoutRow1 (shownBitFirst, false, nullptr);
-    layoutRow2 (shownChain, false, nullptr);
+    if (dragging == nullptr)
+    {
+        layoutRow1 (shownBitFirst, false, nullptr);
+        layoutRow2 (shownChain, false, nullptr);
+    }
+    layoutInside();
 
-    // Inside the blocks
+    if (bgW != lw || bgH != lh)
+    {
+        if (! constructed)
+            buildBackground();
+        else
+        {
+            bgDirty = true;
+            bgDirtyMs = Time::getMillisecondCounterHiRes();
+        }
+    }
+
+    // Remember the size the user sees (not sizes the host sets while the window is hidden)
+    if (constructed && isShowing() && Time::getMillisecondCounterHiRes() - openedMs > 500.0)
+    {
+        proc.editorW.store (getWidth());
+        proc.editorH.store (getHeight());
+    }
+}
+
+// Knobs spread evenly across a block; on wide blocks they stay grouped in the middle
+static void spreadKnobs (std::initializer_list<Knob*> knobs, int blockW, int pad, int knobW, int y, int maxSlot)
+{
+    const int n = (int) knobs.size();
+    const int slot = jmin (maxSlot, (blockW - 2 * pad) / n);
+    const int startX = (blockW - slot * n) / 2;
+    int i = 0;
+    for (auto* k : knobs)
+        k->setBounds (startX + (i++) * slot + (slot - knobW) / 2, y, knobW);
+}
+
+void CrumbleEditor::layoutInside()
+{
     modeBox.setBounds (14, 32, 124, 24);
-    Knob* top[5] = { &freq, &texture, &amount, &stereo, &feedback };
-    for (int i = 0; i < 5; ++i)
-        top[i]->setBounds (14 + i * 80, 76, 80);
-    rate.setBounds (14, 76, 80);
-    Knob* bc[6] = { &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ };
-    for (int i = 0; i < 6; ++i)
-        bc[i]->setBounds (14 + i * 80, 76, 80);
+    spreadKnobs ({ &freq, &texture, &amount, &stereo, &feedback }, wCrumble, 14, 80, 76, 118);
+    rate.setBounds (freq.slider.getX(), 76, 80);
+    spreadKnobs ({ &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ }, wBit, 14, 80, 76, 118);
 
     const int cy = 32, ky = 62;
     driveTypeBox.setBounds (10, cy, 92, 22);
     colTarget->setBounds (108, cy, colTarget->getIdealWidth(), 22);
-    drive.setBounds (11, ky, 58);
-    tone.setBounds (69, ky, 58);
-    colMix.setBounds (127, ky, 58);
+    spreadKnobs ({ &drive, &tone, &colMix }, wColor, 11, 58, ky, 86);
 
     compModeBox.setBounds (10, cy, 92, 22);
     compTarget->setBounds (108, cy, compTarget->getIdealWidth(), 22);
-    Knob* ott[4] = { &ottDepth, &ottTime, &ottUp, &ottDown };
-    Knob* glue[4] = { &glueThresh, &glueRatio, &glueAttack, &glueRelease };
-    for (int i = 0; i < 4; ++i)
-    {
-        ott[i]->setBounds (11 + i * 58, ky, 58);
-        glue[i]->setBounds (11 + i * 58, ky, 58);
-    }
-    compMix.setBounds (11 + 4 * 58, ky, 58);
+    spreadKnobs ({ &ottDepth, &ottTime, &ottUp, &ottDown, &compMix }, wComp, 11, 58, ky, 86);
+    spreadKnobs ({ &glueThresh, &glueRatio, &glueAttack, &glueRelease, &compMix }, wComp, 11, 58, ky, 86);
 
     trShapeBox.setBounds (10, cy, 96, 22);
     trTarget->setBounds (112, cy, trTarget->getIdealWidth(), 22);
-    trDepth.setBounds (11, ky, 58);
-    trRate.setBounds (69, ky, 58);
-    trMs.setBounds (69, ky, 58);
-    trStereo.setBounds (127, ky, 58);
+    spreadKnobs ({ &trDepth, &trRate, &trStereo }, wTrem, 11, 58, ky, 86);
+    trMs.setBounds (trRate.slider.getX(), ky, 58);
 
     autoGainButton.setBounds (6, cy, 94, 22);
-    mix.setBounds ((mixW - 58) / 2, ky, 58);
+    mix.setBounds ((wMix - 58) / 2, ky, 58);
     clipMode->setBounds (10, cy, clipMode->getIdealWidth(), 22);
-    ceiling.setBounds ((clipW - 58) / 2, ky, 58);
+    ceiling.setBounds ((wClip - 58) / 2, ky, 58);
 }
 
 void CrumbleEditor::timerCallback()
 {
     using namespace ParamIDs;
     auto raw = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
+
+    if (bgDirty && Time::getMillisecondCounterHiRes() - bgDirtyMs > 250.0)
+    {
+        bgDirty = false;
+        buildBackground();
+        content.repaint();
+    }
+
+    // Comp switched on or to another mode: Glue is set up on the waveform, OTT on its band view
+    {
+        const int cOn = raw (compOn) > 0.5f ? 1 : 0, cMode = roundToInt (raw (compMode));
+        if (lastCompOn >= 0 && cOn == 1 && (cOn != lastCompOn || cMode != lastCompMode))
+            showComp();
+        lastCompOn = cOn;
+        lastCompMode = cMode;
+    }
 
     inCol.push (proc.inPeak[0].exchange (0.0f), proc.inPeak[1].exchange (0.0f));
     outCol.push (proc.outPeak[0].exchange (0.0f), proc.outPeak[1].exchange (0.0f));
@@ -573,12 +667,9 @@ void CrumbleEditor::applyHelp()
     timerCallback();
 }
 
-void CrumbleEditor::setScale (float s, bool remember)
+void CrumbleEditor::setScale (float s, bool)
 {
-    scale = s;
     setSize (roundToInt (baseW * s), roundToInt (baseH * s));
-    if (remember)
-        saveSetting ("scale", String (s, 3));
 }
 
 void CrumbleEditor::showSettingsMenu()
@@ -589,7 +680,8 @@ void CrumbleEditor::showSettingsMenu()
         themes.addItem (id++, t.name, true, &t == theme);
     const float scales[] = { 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
     for (int i = 0; i < 5; ++i)
-        sizes.addItem (100 + i, String (roundToInt (scales[i] * 100)) + "%", true, std::abs (scale - scales[i]) < 0.01f);
+        sizes.addItem (100 + i, String (roundToInt (scales[i] * 100)) + "%", true,
+                       std::abs (getWidth() - roundToInt (baseW * scales[i])) <= 2 && std::abs (getHeight() - roundToInt (baseH * scales[i])) <= 2);
     help.addItem (200, "On", true, helpOn);
     help.addItem (201, "Off", true, ! helpOn);
     langs.addItem (300, "English", true, lang == Help::Lang::en);
@@ -664,7 +756,10 @@ Rectangle<float> CrumbleEditor::tourTarget (const String& name)
 void CrumbleEditor::buildBackground()
 {
     const auto& t = *theme;
-    const int s = 2, W = baseW * s, H = baseH * s;
+    bgW = lw;
+    bgH = lh;
+    const double f = jmin (2.0, std::sqrt (4.2e6 / ((double) lw * (double) lh)));
+    const int W = jmax (1, roundToInt (lw * f)), H = jmax (1, roundToInt (lh * f));
     background = Image (Image::RGB, W, H, false);
 
     if (t.gloss)
@@ -735,7 +830,7 @@ void CrumbleEditor::buildBackground()
 void CrumbleEditor::paintContent (Graphics& g)
 {
     const auto& t = *theme;
-    g.drawImage (background, Rectangle<float> (0.0f, 0.0f, (float) baseW, (float) baseH));
+    g.drawImage (background, Rectangle<float> (0.0f, 0.0f, (float) lw, (float) lh));
 
     // Logo: vector, in the theme's colour (gold gradient in Luxe)
     const auto la = logoArea.toFloat();

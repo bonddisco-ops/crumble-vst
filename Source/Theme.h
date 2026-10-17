@@ -15,6 +15,16 @@ struct Theme
         return accentDim.interpolatedWith (accentHi, t).withAlpha ((0.45f + 0.55f * t) * alpha);
     }
 
+    // Colour of the compressor marks on the screen (threshold, gain reduction, OTT down)
+    juce::Colour comp() const
+    {
+        if (name == "Ultraviolet") return juce::Colour (0xff7ee8ff);
+        if (name == "Luxe")        return juce::Colour (0xff9fd6ff);
+        if (name == "Mango")       return juce::Colour (0xffffe066);
+        if (name == "Rage")        return juce::Colour (0xffffc23a);
+        return juce::Colour (0xffffd54a);
+    }
+
     static const std::vector<Theme>& all()
     {
         using C = juce::Colour;

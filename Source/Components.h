@@ -177,6 +177,8 @@ public:
     View getView() const { return view; }
     void selectFilter (bool post);
     void touchCeiling (bool dragging);
+    void showOtt();                       // EQ screen with the three OTT bands instead of the filters
+    bool isOttShown() const { return ottFocus; }
     void setHelp (bool enabled, Help::Lang);
     void setFxAvailable (bool available);
     void setBarsIndex (int i);
@@ -193,7 +195,7 @@ public:
 
 private:
     struct Particle { float x, y, vx, vy, life; };
-    enum class Grab { none, thresh, lc, pk, hc };
+    enum class Grab { none, thresh, glue, lc, pk, hc };
 
     void timerCallback() override;
     juce::Rectangle<float> screen() const;
@@ -201,12 +203,21 @@ private:
     juce::Point<float> bulge (float x, float y) const;
     void paintWave (juce::Graphics&, const Theme&);
     void paintEq (juce::Graphics&, const Theme&);
+    void paintOtt (juce::Graphics&, const Theme&);
+    void paintGluePanel (juce::Graphics&, const Theme&);
+    void setOttFocus (bool);
+    bool glueOn() const;
+    bool ottOn() const;
+    juce::Rectangle<float> ottChip() const;
+    juce::Path bulgedRect (juce::Rectangle<float>) const;
     void updateSpectrum();
     void updateTooltip();
 
     // Wave helpers
     float amp() const { return plot().getHeight() * 0.46f * ampZoom; }
     float thresholdOffset() const;
+    float glueOffset() const;
+    Grab waveLineAt (float y) const;
 
     // EQ helpers
     float xForFreq (float f) const;
@@ -239,6 +250,12 @@ private:
 
     Grab grab = Grab::none, hover = Grab::none;
     juce::RangedAudioParameter* thresholdParam = nullptr;
+    juce::RangedAudioParameter* glueThreshParam = nullptr;
+
+    // Compressor display (smoothed for the animation)
+    bool ottFocus = false;
+    float grShown = 0.0f, glueLevelShown = -100.0f;
+    float ottGainShown[3] {}, ottLevelShown[3] { -100.0f, -100.0f, -100.0f };
 
     static constexpr int fftOrder = 12, fftSize = 1 << fftOrder;
     juce::dsp::FFT fft { fftOrder };
