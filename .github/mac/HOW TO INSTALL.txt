@@ -19,17 +19,24 @@
 
 4. Открывай DAW и пересканируй плагины. Crumble на месте.
 
+   Ставятся сразу оба формата:
+   • VST3 — Bitwig, Ableton, FL Studio, Reaper, Cubase;
+   • AU   — Logic, GarageBand (Ableton тоже видит).
+
 ----------------------------------------------------------------
 ЗАПАСНОЙ ВАРИАНТ — Permissions Reset
 Если у тебя уже стоит Permissions Reset — просто кинь в него
-Crumble.vst3, потом положи его в /Library/Audio/Plug-Ins/VST3.
+Crumble.vst3 и Crumble.component, потом разложи их:
+  Crumble.vst3      → /Library/Audio/Plug-Ins/VST3
+  Crumble.component → /Library/Audio/Plug-Ins/Components
 
 ЗАПАСНОЙ ВАРИАНТ — Терминал
-1. Скопируй Crumble.vst3 в /Library/Audio/Plug-Ins/VST3
-   (в Finder: Cmd+Shift+G → вставь этот путь → Enter).
+1. Скопируй Crumble.vst3      в /Library/Audio/Plug-Ins/VST3
+   и Crumble.component в /Library/Audio/Plug-Ins/Components
+   (в Finder: Cmd+Shift+G → вставь путь → Enter).
 2. Открой Терминал (Cmd+Пробел → «Терминал»), вставь строку, Enter:
 
-   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3
+   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3 /Library/Audio/Plug-Ins/Components/Crumble.component
 
 Папка "Standalone (test without DAW)" — Crumble как отдельная
 программа, чтобы погонять без DAW. Ставить не обязательно.
@@ -57,17 +64,24 @@ CRUMBLE for Mac — how to install
 
 4. Open your DAW and rescan plugins.
 
+   Both formats are installed:
+   • VST3 — Bitwig, Ableton, FL Studio, Reaper, Cubase;
+   • AU   — Logic, GarageBand (Ableton sees it too).
+
 ----------------------------------------------------------------
 PLAN B — Permissions Reset
-If you already have Permissions Reset, just drop Crumble.vst3 into it,
-then put it into /Library/Audio/Plug-Ins/VST3.
+If you already have Permissions Reset, drop Crumble.vst3 and
+Crumble.component into it, then put them here:
+  Crumble.vst3      → /Library/Audio/Plug-Ins/VST3
+  Crumble.component → /Library/Audio/Plug-Ins/Components
 
 PLAN B — Terminal
-1. Copy Crumble.vst3 to /Library/Audio/Plug-Ins/VST3
+1. Copy Crumble.vst3      to /Library/Audio/Plug-Ins/VST3
+   and Crumble.component to /Library/Audio/Plug-Ins/Components
    (Finder: Cmd+Shift+G → paste the path → Enter).
 2. Open Terminal (Cmd+Space → "Terminal"), paste this line, press Enter:
 
-   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3
+   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3 /Library/Audio/Plug-Ins/Components/Crumble.component
 
 "Standalone (test without DAW)" is Crumble as a separate app to try it
 without a DAW. Installing it is optional.

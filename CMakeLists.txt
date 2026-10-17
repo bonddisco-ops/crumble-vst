@@ -16,6 +16,12 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 
+if(APPLE)
+    set(CRUMBLE_FORMATS VST3 AU Standalone)
+else()
+    set(CRUMBLE_FORMATS VST3 Standalone)
+endif()
+
 juce_add_plugin(Crumble
     COMPANY_NAME "Primal Rage Lab"
     IS_SYNTH FALSE
@@ -23,7 +29,8 @@ juce_add_plugin(Crumble
     NEEDS_MIDI_OUTPUT FALSE
     PLUGIN_MANUFACTURER_CODE Dlyc
     PLUGIN_CODE Crmb
-    FORMATS VST3 Standalone
+    FORMATS ${CRUMBLE_FORMATS}
+    AU_MAIN_TYPE kAudioUnitType_Effect
     COPY_PLUGIN_AFTER_BUILD FALSE
     PRODUCT_NAME "Crumble")
 

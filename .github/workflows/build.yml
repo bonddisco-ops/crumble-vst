@@ -50,18 +50,22 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          cp -R build/Crumble_artefacts/Release/AU/Crumble.component dist/
           codesign --force --deep --sign - "dist/Crumble.vst3"
+          codesign --force --deep --sign - "dist/Crumble.component"
           codesign --force --deep --sign - "dist/Standalone (test without DAW)/Crumble.app"
           codesign --verify --deep --strict "dist/Crumble.vst3"
           lipo -info "dist/Crumble.vst3/Contents/MacOS/Crumble"
           F="stage/Crumble for Mac"
           mkdir -p "$F" pack
           cp -R "dist/Crumble.vst3" "$F/"
+          cp -R "dist/Crumble.component" "$F/"
           cp -R "dist/Standalone (test without DAW)" "$F/"
           cp ".github/mac/Install Crumble.command" "$F/"
           chmod +x "$F/Install Crumble.command"
           cp ".github/mac/HOW TO INSTALL.txt" "$F/"
           codesign --verify --deep --strict "$F/Crumble.vst3"
+          codesign --verify --deep --strict "$F/Crumble.component"
           ditto -c -k --keepParent "$F" "pack/Crumble-for-Mac.zip"
           cp ".github/mac/HOW TO INSTALL.txt" pack/
           ls -la pack "$F"
@@ -92,3 +96,17 @@ jobs:
           curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval }}"
           unzip -q -o pluginval.zip
           ${{ matrix.pluginval_bin }} --strictness-level 5 --verbose --validate "dist/Crumble.vst3"
+
+      # Apple's own Audio Unit test (the same check Logic runs on new plugins).
+      - name: Test AU with auval (macOS)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R dist/Crumble.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i crumble || true
+          auval -strict -v aufx Crmb Dlyc

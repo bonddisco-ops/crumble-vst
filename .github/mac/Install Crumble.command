@@ -3,7 +3,9 @@
 cd "$(dirname "$0")" || exit 1
 
 SRC="$(pwd)/Crumble.vst3"
+SRC_AU="$(pwd)/Crumble.component"
 DEST="/Library/Audio/Plug-Ins/VST3"
+DEST_AU="/Library/Audio/Plug-Ins/Components"
 
 echo ""
 echo "=============================================="
@@ -29,13 +31,25 @@ sudo cp -R "$SRC" "$DEST/"
 sudo chmod -R 755 "$DEST/Crumble.vst3"
 sudo xattr -cr "$DEST/Crumble.vst3"
 
+# Audio Unit (Logic, GarageBand, Ableton on Mac)
+if [ -d "$SRC_AU" ]; then
+    sudo mkdir -p "$DEST_AU"
+    sudo rm -rf "$DEST_AU/Crumble.component"
+    sudo cp -R "$SRC_AU" "$DEST_AU/"
+    sudo chmod -R 755 "$DEST_AU/Crumble.component"
+    sudo xattr -cr "$DEST_AU/Crumble.component"
+    rm -rf "$HOME/Library/Audio/Plug-Ins/Components/Crumble.component" 2>/dev/null
+    # make macOS notice the new Audio Unit right away
+    killall -9 AudioComponentRegistrar 2>/dev/null
+fi
+
 # Remove an old copy from the user folder, so the DAW doesn't see two Crumbles.
 rm -rf "$HOME/Library/Audio/Plug-Ins/VST3/Crumble.vst3" 2>/dev/null
 
 if [ -f "$DEST/Crumble.vst3/Contents/MacOS/Crumble" ]; then
     echo ""
-    echo "DONE! Crumble is installed to $DEST"
-    echo "ГОТОВО! Crumble установлен."
+    echo "DONE! Crumble is installed (VST3 + AU)."
+    echo "ГОТОВО! Crumble установлен (VST3 + AU)."
     echo ""
     echo "Open your DAW and rescan plugins."
     echo "Открой DAW и пересканируй плагины."
