@@ -43,7 +43,33 @@ jobs:
           cp -R build/Crumble_artefacts/Release/Standalone/. "dist/Standalone (test without DAW)/"
           ls -R dist | head -n 40
 
+      # macOS: GitHub artifacts drop the "executable" flag on files, so the Mac
+      # plugin would arrive broken ("Could not load executable"). We sign the
+      # bundles (ad-hoc) and pack them with ditto, which keeps flags intact.
+      - name: Sign and pack (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          codesign --force --deep --sign - "dist/Crumble.vst3"
+          codesign --force --deep --sign - "dist/Standalone (test without DAW)/Crumble.app"
+          codesign --verify --deep --strict "dist/Crumble.vst3"
+          lipo -info "dist/Crumble.vst3/Contents/MacOS/Crumble"
+          mkdir pack
+          ditto -c -k --keepParent "dist/Crumble.vst3" "pack/Crumble-VST3-macOS.zip"
+          ditto -c -k --keepParent "dist/Standalone (test without DAW)/Crumble.app" "pack/Crumble-Standalone-macOS.zip"
+          cp .github/mac-install.txt "pack/HOW TO INSTALL.txt"
+          ls -la pack
+
+      - name: Upload (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crumble-${{ matrix.name }}
+          path: pack
+          if-no-files-found: error
+
       - name: Upload
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: Crumble-${{ matrix.name }}

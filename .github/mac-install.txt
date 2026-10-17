@@ -1,0 +1,27 @@
+CRUMBLE for Mac - how to install
+================================
+
+1. Double-click "Crumble-VST3-macOS.zip". You get "Crumble.vst3".
+
+2. Close your DAW.
+
+3. Open Terminal (Cmd+Space, type "Terminal", Enter) and paste these
+   three lines one by one (Enter after each). It will ask for your Mac
+   password - type it blind, letters don't show, that's normal:
+
+   sudo rm -rf /Library/Audio/Plug-Ins/VST3/Crumble.vst3
+   sudo cp -R ~/Downloads/Crumble-macOS/Crumble.vst3 /Library/Audio/Plug-Ins/VST3/
+   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3
+
+   (If you unpacked somewhere else than Downloads/Crumble-macOS, change
+   the path in the second line - or type "sudo cp -R " and drag
+   Crumble.vst3 from Finder into the Terminal window, then add
+   " /Library/Audio/Plug-Ins/VST3/" and press Enter.)
+
+4. Open the DAW and rescan plugins.
+
+The last line removes the macOS "downloaded from the internet" lock.
+The plugin isn't notarized by Apple (that costs $99/year), so without
+that line macOS refuses to load it.
+
+Primal Rage Lab
