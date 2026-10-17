@@ -1,18 +1,19 @@
 #pragma once
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
-#include <array>
 #include <atomic>
 #include <cmath>
 #include <vector>
+#include "Params.h"
+#include "PresetManager.h"
 
-// Crumble by Primal Rage Lab
+// Crumble 3 by Primal Rage Lab
 //
-// Signal flow:
-//   wet = Crumble (modulated micro delay, optional tempo tremolo)
-//         -> [Color: Drive -> Squash -> auto gain, when set to "Wet signal"]
-//         -> Low Cut / High Cut filters
-//   out = Mix (dry + wet) -> [Color, when set to "Whole signal"] -> Output
+//  IN -> [Crumble <-> Bitcrush] -> Color(wet) -> Filter(wet) -> Tremolo(wet) -> x Follow -> Mix
+//     -> Color(all) -> Filter(all) -> Tremolo(all) -> Output -> Clip -> OUT
+//
+// "Wet" stages work on the effect only (the difference between the processed and the
+// clean signal), so the original stays intact even at Mix 100 %.
 class CrumbleProcessor : public juce::AudioProcessor
 {
 public:
@@ -43,21 +44,22 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
+    PresetManager presets { apvts };
 
-    // Waveform for the display: one value per bucket (the sample with the largest magnitude).
+    // ---- Data for the display (written on the audio thread, read by the editor) ----
     struct Scope
     {
-        static constexpr int size = 512;
-        float data[2][size] {};
+        static constexpr int size = 4096;        // buckets of 0.5 ms -> about 2 s of history
+        float out[2][size] {};
+        float in[size] {};
         std::atomic<int> writeCount { 0 };
     };
     Scope scope;
+    std::atomic<float> inPeak[2] {}, outPeak[2] {};
+    std::atomic<float> followGainNow { 1.0f };
+    std::atomic<float> tremoloNow { 1.0f };
 
-    static const juce::StringArray rateNames;
-
-    // Current tremolo level of the effect (0..1), for the display
-    std::atomic<float> effectLevel { 1.0f };
-    static constexpr double maxDepthSeconds = 0.002;   // 2 ms at Amount 100 %
+    static constexpr double maxDepthSeconds = 0.002;   // crumble depth at Amount 100 %
 
 private:
     struct Biquad
@@ -90,8 +92,7 @@ private:
             buf[(size_t) write] = x;
             write = (write + 1) & mask;
         }
-        // d = delay in samples (0 = the newest sample)
-        float read (float d) const
+        float read (float d) const   // d = delay in samples, 0 = newest
         {
             const float pos = (float) (write - 1) - d;
             const int i0 = (int) std::floor (pos);
@@ -102,60 +103,99 @@ private:
         }
     };
 
+    struct Butter4   // 4th-order Butterworth from two state-variable stages
+    {
+        juce::dsp::StateVariableTPTFilter<float> s1, s2;
+        void prepare (const juce::dsp::ProcessSpec& spec, juce::dsp::StateVariableTPTFilterType type)
+        {
+            for (auto* s : { &s1, &s2 })
+            {
+                s->prepare (spec);
+                s->setType (type);
+                s->reset();
+            }
+            s1.setResonance (0.5412f);
+            s2.setResonance (1.3066f);
+        }
+        void setCutoff (float hz)
+        {
+            if (std::abs (hz - cutoff) > 0.01f)
+            {
+                s1.setCutoffFrequency (hz);
+                s2.setCutoffFrequency (hz);
+                cutoff = hz;
+            }
+        }
+        float process (int ch, float x) { return s2.processSample (ch, s1.processSample (ch, x)); }
+        float cutoff = -1.0f;
+    };
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    std::atomic<float>* raw (const char* id) { return apvts.getRawParameterValue (id); }
+
     void updateNoiseFilters (float freq, float texture);
     float filteredNoise (int source);
-    void updateFilters (float lowCut, float highCut);
-    float colorStage (int ch, float x, float driveGain, float driveBlend, float squash, float makeup,
-                      float attCoef, float relCoef, float rmsCoef);
-    void pushToScope (float left, float right);
+    float crumbleSample (int ch, float x, float depth, float mod, float feedback);
+    float bitcrushSample (int ch, float x, bool newHold, float levels, float quantize, float dither,
+                          float adcQ, float dacQ);
+    float colorSample (int ch, float x, int type, float drive, float tone, float squash);
+    float tremoloShape (int shape, double phase) const;
+    float clipSample (float x, bool hard, float ceiling) const;
 
     // Parameters
-    std::atomic<float>* pMode = nullptr;
-    std::atomic<float>* pFreq = nullptr;
-    std::atomic<float>* pSync = nullptr;
-    std::atomic<float>* pRate = nullptr;
-    std::atomic<float>* pTexture = nullptr;
-    std::atomic<float>* pAmount = nullptr;
-    std::atomic<float>* pStereo = nullptr;
-    std::atomic<float>* pLowCut = nullptr;
-    std::atomic<float>* pHighCut = nullptr;
-    std::atomic<float>* pDrive = nullptr;
-    std::atomic<float>* pSquash = nullptr;
-    std::atomic<float>* pMix = nullptr;
-    std::atomic<float>* pOutput = nullptr;
-    std::atomic<float>* pAutoGain = nullptr;
-    std::atomic<float>* pColorTarget = nullptr;
+    std::atomic<float> *pInput, *pOutput, *pMix, *pAutoGain, *pOrder,
+                       *pCrOn, *pMode, *pFreq, *pRate, *pTexture, *pAmount, *pStereo, *pFeedback,
+                       *pBcOn, *pBcFreq, *pBits, *pQuantize, *pDither, *pAdcQ, *pDacQ,
+                       *pFltOn, *pFltTarget, *pLowCut, *pHighCut,
+                       *pColOn, *pColTarget, *pDriveType, *pDrive, *pTone, *pSquash,
+                       *pTrOn, *pTrTarget, *pTrShape, *pTrDepth, *pTrRate, *pTrPan,
+                       *pFolOn, *pFolThresh, *pFolMode,
+                       *pClipOn, *pClipMode, *pCeiling;
 
     double sr = 44100.0;
 
-    // Wet filters: two cascaded state-variable filters each = 24 dB/oct Butterworth
-    juce::dsp::StateVariableTPTFilter<float> hp1, hp2, lp1, lp2;
-    float currentLowCut = -1.0f, currentHighCut = -1.0f;
-    double tremPhase = 0.0;
-
-    // Squash: three sub-bands inside the mid band
-    juce::dsp::LinkwitzRileyFilter<float> sq1, sq2, sqAp;
-    float sqEnv[2][3] {};
-    float sqGainDb[2][3] {};
-
     // Crumble
-    DelayLine crumbleDelay[2];
-    DelayLine alignDry[2];
-    Biquad noiseFilt[3];               // 0 = shared, 1 = left only, 2 = right only
+    DelayLine crumbleDelay[2], alignDry[2];
+    Biquad noiseFilt[3];          // 0 shared, 1 left only, 2 right only
     float noiseGain = 1.0f;
     juce::Random rng;
-    double phase = 0.0;
+    double lfoPhase = 0.0;
+    float fbState[2] {}, fbHp[2] {};
 
-    // Auto gain for Drive + Squash
+    // Bitcrush
+    Butter4 adc, dac;
+    double holdPhase = 0.0;
+    float hold[2] {};
+
+    // Color
+    juce::dsp::LinkwitzRileyFilter<float> sq1, sq2, sqAp;
+    float sqEnv[2][3] {}, sqGainDb[2][3] {};
+    float dcX[2] {}, dcY[2] {}, tapeLp[2] {}, toneLp[2] {};
     float agIn[2] {}, agOut[2] {};
     float agGain = 1.0f;
+    float sqAtt = 0.0f, sqRel = 0.0f, rmsCoef = 0.0f, toneCoef = 0.0f, tapeCoef = 0.0f;   // per-sample filter coefficients
 
-    juce::SmoothedValue<float> depthSmooth, mixSmooth, driveSmooth, squashSmooth, outSmooth, stereoSmooth;
+    // Filters
+    Butter4 hp, lp;
+
+    // Tremolo
+    double trPhase = 0.0;
+    float trGain[2] { 1.0f, 1.0f };
+
+    // Follow
+    float folEnv = 0.0f, folGain = 1.0f;
+
+    // Smoothed values
+    juce::SmoothedValue<float> inGainS, outGainS, mixS, depthS, stereoS, feedbackS, driveS, toneS, squashS,
+                               trDepthS, crFade, bcFade, fltFade, colFade, trFade, folFade, clipFade;
+
+    // Swapping Crumble and Bitcrush: the effect dips for a few ms, the order flips at the bottom
+    bool appliedOrder = false;
+    float swapGain = 1.0f;
 
     // Scope decimation
-    int bucketLen = 32, bucketPos = 0;
-    float bucketPeak[2] {};
+    int bucketLen = 24, bucketPos = 0;
+    float bucketOut[2] {}, bucketIn = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrumbleProcessor)
 };

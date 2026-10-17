@@ -1,46 +1,6 @@
 #pragma once
 #include "PluginProcessor.h"
-#include <vector>
-
-// Knobs, toggles and lists in the Primal Rage Lab style
-class CrumbleLookAndFeel : public juce::LookAndFeel_V4
-{
-public:
-    CrumbleLookAndFeel();
-
-    void drawRotarySlider (juce::Graphics&, int x, int y, int width, int height, float sliderPos,
-                           float startAngle, float endAngle, juce::Slider&) override;
-    void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool highlighted, bool down) override;
-    juce::Font getComboBoxFont (juce::ComboBox&) override;
-    juce::Font getPopupMenuFont() override;
-    juce::Label* createSliderTextBox (juce::Slider&) override;
-};
-
-// Live waveform that gets brighter and more broken with Amount and Drive
-class WaveDisplay : public juce::Component,
-                    private juce::Timer
-{
-public:
-    explicit WaveDisplay (CrumbleProcessor&);
-    void paint (juce::Graphics&) override;
-
-private:
-    struct Particle { float x, y, vx, vy, life; };
-
-    void timerCallback() override;
-
-    CrumbleProcessor& proc;
-    std::atomic<float>* pAmount;
-    std::atomic<float>* pDrive;
-    std::atomic<float>* pSquash;
-    std::atomic<float>* pStereo;
-    std::atomic<float>* pMode;
-    std::vector<Particle> particles;
-    juce::Random rng;
-    float time = 0.0f;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveDisplay)
-};
+#include "Components.h"
 
 class CrumbleEditor : public juce::AudioProcessorEditor,
                       private juce::Timer
@@ -49,46 +9,73 @@ public:
     explicit CrumbleEditor (CrumbleProcessor&);
     ~CrumbleEditor() override;
 
-    void paint (juce::Graphics&) override;
     void resized() override;
+    void paint (juce::Graphics&) override {}
+
+    static constexpr int baseW = 1160, baseH = 744;
+
+    // For tests: switch theme without touching the saved settings
+    void setThemeByName (const juce::String& name) { applyTheme (Theme::byName (name), false); }
 
 private:
-    using SliderAttachment   = juce::AudioProcessorValueTreeState::SliderAttachment;
-    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
-    using ButtonAttachment   = juce::AudioProcessorValueTreeState::ButtonAttachment;
-
-    struct Knob
+    class Content : public juce::Component
     {
-        juce::Slider slider;
-        juce::Label label;
-        std::unique_ptr<SliderAttachment> attachment;
-    };
-
-    struct Group
-    {
-        juce::String title;
-        juce::Rectangle<int> area;
+    public:
+        explicit Content (CrumbleEditor& e) : editor (e) {}
+        void paint (juce::Graphics& g) override { editor.paintContent (g); }
+        void mouseDown (const juce::MouseEvent& e) override;
+    private:
+        CrumbleEditor& editor;
     };
 
     void timerCallback() override;
-    void initKnob (Knob&, const juce::String& name, const juce::String& paramId);
-    void prepareButton (juce::Button&);
-    void prepareCombo (juce::ComboBox&);
+    void paintContent (juce::Graphics&);
+    void applyTheme (const Theme&, bool remember);
+    void setScale (float scale, bool remember);
+    void layoutRows (bool animate);
+    void showSettingsMenu();
     void buildBackground();
+    void tintLogo();
+    void addCombo (juce::Component& parent, juce::ComboBox&, const char* paramId, const juce::StringArray& items,
+                   std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>&);
+
+    static juce::String loadSetting (const juce::String& key, const juce::String& fallback);
+    static void saveSetting (const juce::String& key, const juce::String& value);
 
     CrumbleProcessor& proc;
-    CrumbleLookAndFeel laf;   // declared first so it outlives every child component
+    CrumbleLookAndFeel laf;           // first, so it outlives every component
+    const Theme* theme = nullptr;
+    Content content { *this };
+    juce::Image background, logoRaw, logo;
+    float scale = 1.0f;
 
-    juce::Image background, logo;
-    WaveDisplay wave;
+    PresetBar presetBar { proc };
+    IconButton gear { IconButton::Icon::gear }, swapButton { IconButton::Icon::swap };
+    ScopeView scope { proc };
+    MeterColumn inCol { "IN", proc.apvts, ParamIDs::input, "Input" };
+    MeterColumn outCol { "OUT", proc.apvts, ParamIDs::output, "Output" };
 
-    juce::ComboBox modeBox, rateBox, colorTargetBox;
-    juce::ToggleButton syncButton { "Sync" }, autoGainButton { "Auto gain" };
-    std::unique_ptr<ComboBoxAttachment> modeAttachment, rateAttachment, colorTargetAttachment;
-    std::unique_ptr<ButtonAttachment> syncAttachment, autoGainAttachment;
+    Block crumbleBlock { "CRUMBLE", proc.apvts, ParamIDs::crOn };
+    Block bitBlock     { "BITCRUSH", proc.apvts, ParamIDs::bcOn };
+    Block filterBlock  { "WET FILTER", proc.apvts, ParamIDs::fltOn };
+    Block colorBlock   { "COLOR", proc.apvts, ParamIDs::colOn };
+    Block tremBlock    { "TREMOLO", proc.apvts, ParamIDs::trOn };
+    Block mixBlock     { "MIX", proc.apvts, nullptr };
+    Block clipBlock    { "CLIP", proc.apvts, ParamIDs::clipOn };
 
-    Knob freq, texture, amount, stereo, lowCut, highCut, drive, squash, mix, output;
-    std::vector<Group> groups;
+    juce::ComboBox modeBox, driveTypeBox, trShapeBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, driveTypeAtt, trShapeAtt;
+    std::unique_ptr<Segmented> fltTarget, colTarget, trTarget, clipMode;
+    juce::ToggleButton autoGainButton { "Auto gain" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoGainAtt;
+
+    Knob freq, rate, texture, amount, stereo, feedback;
+    Knob bcFreq, bits, quantize, dither, adcQ, dacQ;
+    Knob lowCut, highCut, drive, tone, squash, trDepth, trRate, trPan, mix, ceiling;
+    std::vector<Knob*> allKnobs;
+
+    AboutOverlay about;
+    bool shownOrder = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrumbleEditor)
 };
