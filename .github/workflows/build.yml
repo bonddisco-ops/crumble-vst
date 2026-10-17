@@ -89,6 +89,7 @@ jobs:
       # Automatic plugin test (opens the plugin and its window, checks for crashes).
       # It does not block the download if it fails.
       - name: Test with pluginval
+        id: pluginval
         continue-on-error: true
         timeout-minutes: 15
         shell: bash
@@ -99,6 +100,7 @@ jobs:
 
       # Apple's own Audio Unit test (the same check Logic runs on new plugins).
       - name: Test AU with auval (macOS)
+        id: auval
         if: runner.os == 'macOS'
         continue-on-error: true
         timeout-minutes: 10
@@ -110,3 +112,8 @@ jobs:
           sleep 3
           auval -a | grep -i crumble || true
           auval -strict -v aufx Crmb Dlyc
+
+      - name: Test results
+        if: always()
+        shell: bash
+        run: echo "::notice title=Tests ${{ matrix.name }}::pluginval=${{ steps.pluginval.outcome }} auval=${{ steps.auval.outcome }}"
