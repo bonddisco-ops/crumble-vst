@@ -54,11 +54,17 @@ jobs:
           codesign --force --deep --sign - "dist/Standalone (test without DAW)/Crumble.app"
           codesign --verify --deep --strict "dist/Crumble.vst3"
           lipo -info "dist/Crumble.vst3/Contents/MacOS/Crumble"
-          mkdir pack
-          ditto -c -k --keepParent "dist/Crumble.vst3" "pack/Crumble-VST3-macOS.zip"
-          ditto -c -k --keepParent "dist/Standalone (test without DAW)/Crumble.app" "pack/Crumble-Standalone-macOS.zip"
-          cp .github/mac-install.txt "pack/HOW TO INSTALL.txt"
-          ls -la pack
+          F="stage/Crumble for Mac"
+          mkdir -p "$F" pack
+          cp -R "dist/Crumble.vst3" "$F/"
+          cp -R "dist/Standalone (test without DAW)" "$F/"
+          cp ".github/mac/Install Crumble.command" "$F/"
+          chmod +x "$F/Install Crumble.command"
+          cp ".github/mac/HOW TO INSTALL.txt" "$F/"
+          codesign --verify --deep --strict "$F/Crumble.vst3"
+          ditto -c -k --keepParent "$F" "pack/Crumble-for-Mac.zip"
+          cp ".github/mac/HOW TO INSTALL.txt" pack/
+          ls -la pack "$F"
 
       - name: Upload (macOS)
         if: runner.os == 'macOS'

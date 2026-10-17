@@ -1,0 +1,75 @@
+﻿CRUMBLE для Mac — как установить
+=================================
+
+0. Закрой DAW (Bitwig, Ableton и т.д.).
+
+1. Двойной клик по "Crumble-for-Mac.zip" — появится папка "Crumble for Mac".
+
+2. Внутри двойной клик по "Install Crumble.command".
+
+   macOS в первый раз его не пустит — он скачан из интернета и не заверен
+   в Apple. Это нормально, делается один раз:
+   • старые macOS (до 15): правый клик по файлу → «Открыть» → «Открыть»;
+   • macOS 15 и новее: после отказа зайди в Системные настройки →
+     Конфиденциальность и безопасность → внизу «Всё равно открыть» →
+     снова запусти файл.
+
+3. Откроется окно Терминала и спросит пароль от мака. Буквы при вводе
+   не видно — так и надо. Enter. Ждёшь надпись «ГОТОВО».
+
+4. Открывай DAW и пересканируй плагины. Crumble на месте.
+
+----------------------------------------------------------------
+ЗАПАСНОЙ ВАРИАНТ — Permissions Reset
+Если у тебя уже стоит Permissions Reset — просто кинь в него
+Crumble.vst3, потом положи его в /Library/Audio/Plug-Ins/VST3.
+
+ЗАПАСНОЙ ВАРИАНТ — Терминал
+1. Скопируй Crumble.vst3 в /Library/Audio/Plug-Ins/VST3
+   (в Finder: Cmd+Shift+G → вставь этот путь → Enter).
+2. Открой Терминал (Cmd+Пробел → «Терминал»), вставь строку, Enter:
+
+   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3
+
+Папка "Standalone (test without DAW)" — Crumble как отдельная
+программа, чтобы погонять без DAW. Ставить не обязательно.
+
+
+================================================================
+
+CRUMBLE for Mac — how to install
+================================
+
+0. Close your DAW.
+
+1. Double-click "Crumble-for-Mac.zip" — you get the "Crumble for Mac" folder.
+
+2. Inside it, double-click "Install Crumble.command".
+
+   The first time macOS will block it — it's downloaded from the internet
+   and not notarized by Apple. Normal, you only do this once:
+   • older macOS (before 15): right-click the file → Open → Open;
+   • macOS 15 and newer: after the warning go to System Settings →
+     Privacy & Security → scroll down → "Open Anyway" → run the file again.
+
+3. A Terminal window asks for your Mac password. Letters don't show while
+   typing — that's normal. Press Enter and wait for "DONE".
+
+4. Open your DAW and rescan plugins.
+
+----------------------------------------------------------------
+PLAN B — Permissions Reset
+If you already have Permissions Reset, just drop Crumble.vst3 into it,
+then put it into /Library/Audio/Plug-Ins/VST3.
+
+PLAN B — Terminal
+1. Copy Crumble.vst3 to /Library/Audio/Plug-Ins/VST3
+   (Finder: Cmd+Shift+G → paste the path → Enter).
+2. Open Terminal (Cmd+Space → "Terminal"), paste this line, press Enter:
+
+   sudo xattr -cr /Library/Audio/Plug-Ins/VST3/Crumble.vst3
+
+"Standalone (test without DAW)" is Crumble as a separate app to try it
+without a DAW. Installing it is optional.
+
+Primal Rage Lab
