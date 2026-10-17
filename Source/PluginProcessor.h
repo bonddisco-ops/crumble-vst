@@ -2,18 +2,19 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 #include <atomic>
-#include <cmath>
-#include <vector>
 #include "Params.h"
+#include "Dsp.h"
 #include "PresetManager.h"
 
-// Crumble 3 by Primal Rage Lab
+// Crumble 3.1 by Primal Rage Lab
 //
-//  IN -> [Crumble <-> Bitcrush] -> Color(wet) -> Filter(wet) -> Tremolo(wet) -> x Follow -> Mix
-//     -> Color(all) -> Filter(all) -> Tremolo(all) -> Output -> Clip -> OUT
+//  IN -> PRE filter (FX: only what goes into the effect / All: everything)
+//     -> [Crumble <-> Bitcrush] -> effect = processed - clean
+//     -> blocks set to Wet (Color, Comp, Tremolo in the chosen order) on the effect
+//     -> POST filter if set to FX -> x Follow -> Mix with the clean signal
+//     -> blocks set to All on everything -> POST filter if set to All -> Output -> Clip -> OUT
 //
-// "Wet" stages work on the effect only (the difference between the processed and the
-// clean signal), so the original stays intact even at Mix 100 %.
+// With Crumble and Bitcrush both off there is no effect, so every block works on everything.
 class CrumbleProcessor : public juce::AudioProcessor
 {
 public:
@@ -49,134 +50,90 @@ public:
     // ---- Data for the display (written on the audio thread, read by the editor) ----
     struct Scope
     {
-        static constexpr int size = 4096;        // buckets of 0.5 ms -> about 2 s of history
-        float out[2][size] {};
-        float in[size] {};
+        static constexpr int size = 65536;            // 1 ms buckets -> about 65 s of history
+        float hi[size] {}, lo[size] {}, in[size] {}, preClip[size] {};
         std::atomic<int> writeCount { 0 };
+        // Beat clock: the beat position at bucket number 'beatCount', and the tempo
+        std::atomic<int> beatCount { 0 };
+        std::atomic<double> beatAt { 0.0 };
+        std::atomic<double> bpm { 120.0 };
     };
     Scope scope;
+
+    struct Spectrum
+    {
+        static constexpr int size = 8192;
+        float in[size] {}, out[size] {};
+        std::atomic<int> writePos { 0 };
+    };
+    Spectrum spectrum;
+
     std::atomic<float> inPeak[2] {}, outPeak[2] {};
-    std::atomic<float> followGainNow { 1.0f };
-    std::atomic<float> tremoloNow { 1.0f };
+    std::atomic<double> currentSampleRate { 44100.0 };
 
     static constexpr double maxDepthSeconds = 0.002;   // crumble depth at Amount 100 %
 
 private:
-    struct Biquad
-    {
-        float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
-        float process (float x)
-        {
-            const float y = b0 * x + z1;
-            z1 = b1 * x - a1 * y + z2;
-            z2 = b2 * x - a2 * y;
-            return y;
-        }
-        void reset() { z1 = z2 = 0; }
-    };
-
-    struct DelayLine
-    {
-        std::vector<float> buf;
-        int mask = 0, write = 0;
-
-        void prepare (int minSize)
-        {
-            const int n = juce::nextPowerOfTwo (minSize);
-            buf.assign ((size_t) n, 0.0f);
-            mask = n - 1;
-            write = 0;
-        }
-        void push (float x)
-        {
-            buf[(size_t) write] = x;
-            write = (write + 1) & mask;
-        }
-        float read (float d) const   // d = delay in samples, 0 = newest
-        {
-            const float pos = (float) (write - 1) - d;
-            const int i0 = (int) std::floor (pos);
-            const float frac = pos - (float) i0;
-            const float a = buf[(size_t) (i0 & mask)];
-            const float b = buf[(size_t) ((i0 + 1) & mask)];
-            return a + (b - a) * frac;
-        }
-    };
-
-    struct Butter4   // 4th-order Butterworth from two state-variable stages
-    {
-        juce::dsp::StateVariableTPTFilter<float> s1, s2;
-        void prepare (const juce::dsp::ProcessSpec& spec, juce::dsp::StateVariableTPTFilterType type)
-        {
-            for (auto* s : { &s1, &s2 })
-            {
-                s->prepare (spec);
-                s->setType (type);
-                s->reset();
-            }
-            s1.setResonance (0.5412f);
-            s2.setResonance (1.3066f);
-        }
-        void setCutoff (float hz)
-        {
-            if (std::abs (hz - cutoff) > 0.01f)
-            {
-                s1.setCutoffFrequency (hz);
-                s2.setCutoffFrequency (hz);
-                cutoff = hz;
-            }
-        }
-        float process (int ch, float x) { return s2.processSample (ch, s1.processSample (ch, x)); }
-        float cutoff = -1.0f;
-    };
-
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
-    std::atomic<float>* raw (const char* id) { return apvts.getRawParameterValue (id); }
+    std::atomic<float>* raw (const juce::String& id) { return apvts.getRawParameterValue (id); }
 
     void updateNoiseFilters (float freq, float texture);
     float filteredNoise (int source);
     float crumbleSample (int ch, float x, float depth, float mod, float feedback);
-    float bitcrushSample (int ch, float x, bool newHold, float levels, float quantize, float dither,
-                          float adcQ, float dacQ);
-    float colorSample (int ch, float x, int type, float drive, float tone, float squash);
+    float bitcrushSample (int ch, float x, bool newHold, float levels, float quantize, float dither, float adcQ, float dacQ);
     float tremoloShape (int shape, double phase) const;
-    float clipSample (float x, bool hard, float ceiling) const;
+    static float clipSample (float x, bool hard, float ceiling);
+    void runStage (int stage, float* v, int numCh);
+
+    struct FilterParams
+    {
+        std::atomic<float> *on, *target, *lc, *hc, *lcSlope, *hcSlope, *pkF, *pkG, *pkQ;
+    };
+    FilterParams preP {}, postP {};
+    void bindFilter (FilterParams&, bool post);
 
     // Parameters
-    std::atomic<float> *pInput, *pOutput, *pMix, *pAutoGain, *pOrder,
+    std::atomic<float> *pInput, *pOutput, *pMix, *pAutoGain, *pOrder, *pChain,
                        *pCrOn, *pMode, *pFreq, *pRate, *pTexture, *pAmount, *pStereo, *pFeedback,
                        *pBcOn, *pBcFreq, *pBits, *pQuantize, *pDither, *pAdcQ, *pDacQ,
-                       *pFltOn, *pFltTarget, *pLowCut, *pHighCut,
-                       *pColOn, *pColTarget, *pDriveType, *pDrive, *pTone, *pSquash,
-                       *pTrOn, *pTrTarget, *pTrShape, *pTrDepth, *pTrRate, *pTrPan,
+                       *pColOn, *pColTarget, *pDriveType, *pDrive, *pTone, *pColMix,
+                       *pCompOn, *pCompTarget, *pCompMode, *pOttDepth, *pOttTime, *pOttUp, *pOttDown,
+                       *pGlueThresh, *pGlueRatio, *pGlueAttack, *pGlueRelease, *pCompMix,
+                       *pTrOn, *pTrTarget, *pTrShape, *pTrDepth, *pTrRateMode, *pTrRate, *pTrMs, *pTrPan,
                        *pFolOn, *pFolThresh, *pFolMode,
                        *pClipOn, *pClipMode, *pCeiling;
 
     double sr = 44100.0;
 
     // Crumble
-    DelayLine crumbleDelay[2], alignDry[2];
-    Biquad noiseFilt[3];          // 0 shared, 1 left only, 2 right only
+    cdsp::DelayLine crumbleDelay[2], alignDry[2], alignSrc[2];
+    cdsp::Biquad noiseFilt[3];          // 0 shared, 1 left only, 2 right only
     float noiseGain = 1.0f;
     juce::Random rng;
     double lfoPhase = 0.0;
     float fbState[2] {}, fbHp[2] {};
 
     // Bitcrush
-    Butter4 adc, dac;
+    cdsp::CutFilter adc, dac;
     double holdPhase = 0.0;
     float hold[2] {};
 
-    // Color
-    juce::dsp::LinkwitzRileyFilter<float> sq1, sq2, sqAp;
-    float sqEnv[2][3] {}, sqGainDb[2][3] {};
-    float dcX[2] {}, dcY[2] {}, tapeLp[2] {}, toneLp[2] {};
-    float agIn[2] {}, agOut[2] {};
-    float agGain = 1.0f;
-    float sqAtt = 0.0f, sqRel = 0.0f, rmsCoef = 0.0f, toneCoef = 0.0f, tapeCoef = 0.0f;   // per-sample filter coefficients
+    // Blocks
+    cdsp::Color color;
+    cdsp::Ott ott;
+    cdsp::Glue glue;
+    cdsp::AutoGain agColor, agComp;
+    cdsp::FilterBank preFilter, postFilter;
 
-    // Filters
-    Butter4 hp, lp;
+    // Per-block values for the current sample (set in processBlock, used by runStage)
+    struct StageState
+    {
+        int driveType = 0, compMode = 0;
+        float drive = 0, tone = 0, colMix = 1, colF = 0;
+        float ottDepth = 0, ottUp = 0, ottDown = 0, glueThresh = 0, glueRatio = 4, compMix = 1, compF = 0;
+        float trGain[2] { 1.0f, 1.0f };
+        bool autoGain = true;
+    } st;
 
     // Tremolo
     double trPhase = 0.0;
@@ -185,17 +142,32 @@ private:
     // Follow
     float folEnv = 0.0f, folGain = 1.0f;
 
-    // Smoothed values
-    juce::SmoothedValue<float> inGainS, outGainS, mixS, depthS, stereoS, feedbackS, driveS, toneS, squashS,
-                               trDepthS, crFade, bcFade, fltFade, colFade, trFade, folFade, clipFade;
+    // Routing: changes go through a short dip so they never click
+    struct Routing
+    {
+        bool bitFirst = false, colWet = true, compWet = true, trWet = true, preFx = true, postFx = true;
+        int chain = 0;
+        bool operator!= (const Routing& o) const
+        {
+            return bitFirst != o.bitFirst || colWet != o.colWet || compWet != o.compWet || trWet != o.trWet
+                || preFx != o.preFx || postFx != o.postFx || chain != o.chain;
+        }
+    };
+    Routing applied, pending;
+    float routeGain = 1.0f;
+    Routing currentRouting();
 
-    // Swapping Crumble and Bitcrush: the effect dips for a few ms, the order flips at the bottom
-    bool appliedOrder = false;
-    float swapGain = 1.0f;
+    // Beat clock for the display
+    double beatClock = 0.0;
+
+    // Smoothed values
+    juce::SmoothedValue<float> inGainS, outGainS, mixS, depthS, stereoS, feedbackS, driveS, toneS, colMixS, compMixS,
+                               ottDepthS, trDepthS, crFade, bcFade, colFade, compFade, trFade, folFade, clipFade,
+                               preFade, postFade;
 
     // Scope decimation
-    int bucketLen = 24, bucketPos = 0;
-    float bucketOut[2] {}, bucketIn = 0.0f;
+    int bucketLen = 48, bucketPos = 0;
+    float bucketHi = 0.0f, bucketLo = 0.0f, bucketIn = 0.0f, bucketPre = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrumbleProcessor)
 };

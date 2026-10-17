@@ -1,42 +1,46 @@
 #include "PluginEditor.h"
-#include "BinaryData.h"
+#include "Logo.h"
 
 using namespace juce;
 
 namespace
 {
     constexpr int X0 = 96, X1 = 1064;
-    constexpr int row1Y = 330, row2Y = 532, rowH = 190;
-    constexpr int crumbleW = 414, bitW = 492, swapW = X1 - X0 - crumbleW - bitW;
-    const Rectangle<int> logoArea (96, 10, 56, 58);
+    constexpr int row1Y = 449, row1H = 200, row2Y = 661, row2H = 170;
+    constexpr int crumbleW = 428, bitW = 508;
+    constexpr int colorW = 196, compW = 312, tremW = 196, mixW = 102, clipW = 102;
+    constexpr int row2Gap = (X1 - X0 - (colorW + compW + tremW + mixW + clipW)) / 4;
+    const Rectangle<int> logoArea (96, 10, 58, 60);
+    const Rectangle<int> titleArea (96, 10, 340, 60);
+    bool askedThisRun = false;
+
+    PropertiesFile::Options settingsOptions()
+    {
+        PropertiesFile::Options o;
+        o.applicationName = "Crumble";
+        o.folderName = "Primal Rage Lab";
+        o.filenameSuffix = ".settings";
+        o.osxLibrarySubFolder = "Application Support";
+        o.millisecondsBeforeSaving = 0;
+        return o;
+    }
 }
 
 String CrumbleEditor::loadSetting (const String& key, const String& fallback)
 {
-    PropertiesFile::Options o;
-    o.applicationName = "Crumble";
-    o.folderName = "Primal Rage Lab";
-    o.filenameSuffix = ".settings";
-    o.osxLibrarySubFolder = "Application Support";
-    PropertiesFile f (o);
+    PropertiesFile f (settingsOptions());
     return f.getValue (key, fallback);
 }
 
 void CrumbleEditor::saveSetting (const String& key, const String& value)
 {
-    PropertiesFile::Options o;
-    o.applicationName = "Crumble";
-    o.folderName = "Primal Rage Lab";
-    o.filenameSuffix = ".settings";
-    o.osxLibrarySubFolder = "Application Support";
-    o.millisecondsBeforeSaving = 0;
-    PropertiesFile f (o);
+    PropertiesFile f (settingsOptions());
     f.setValue (key, value);
     f.saveIfNeeded();
 }
 
 void CrumbleEditor::addCombo (Component& parent, ComboBox& box, const char* paramId, const StringArray& items,
-                              std::unique_ptr<AudioProcessorValueTreeState::ComboBoxAttachment>& att)
+                              std::unique_ptr<AudioProcessorValueTreeState::ComboBoxAttachment>& att, bool)
 {
     box.addItemList (items, 1);
     box.setWantsKeyboardFocus (false);
@@ -52,89 +56,147 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     setLookAndFeel (&laf);
     addAndMakeVisible (content);
 
-    logoRaw = ImageCache::getFromMemory (BinaryData::logo_png, BinaryData::logo_pngSize);
-
-    // Header
     content.addAndMakeVisible (presetBar);
     content.addAndMakeVisible (gear);
     gear.onClick = [this] { showSettingsMenu(); };
-
-    // Scope and meters
     content.addAndMakeVisible (scope);
     content.addAndMakeVisible (inCol);
     content.addAndMakeVisible (outCol);
 
-    // Blocks
-    for (auto* b : { &crumbleBlock, &bitBlock, &filterBlock, &colorBlock, &tremBlock, &mixBlock, &clipBlock })
-        content.addAndMakeVisible (*b);
-    content.addAndMakeVisible (swapButton);
-    swapButton.onClick = [this]
+    for (auto* b : { &crumbleBlock, &bitBlock, &colorBlock, &compBlock, &tremBlock, &mixBlock, &clipBlock })
     {
-        auto* param = proc.apvts.getParameter (order);
-        param->beginChangeGesture();
-        param->setValueNotifyingHost (param->getValue() > 0.5f ? 0.0f : 1.0f);
-        param->endChangeGesture();
-    };
+        content.addAndMakeVisible (*b);
+        b->onDragStart = [this] (Block& blk) { dragStart (blk); };
+        b->onDragMove = [this] (Block& blk, int dx) { dragMove (blk, dx); };
+        b->onDragEnd = [this] (Block& blk) { dragEnd (blk); };
+    }
 
     auto& apvts = proc.apvts;
+
     // Crumble
-    addCombo (crumbleBlock, modeBox, mode, Tables::modes, modeAtt);
-    freq.init (crumbleBlock, apvts, "Frequency", ParamIDs::freq);
-    rate.init (crumbleBlock, apvts, "Rate", ParamIDs::rate);
-    texture.init (crumbleBlock, apvts, "Texture", ParamIDs::texture);
-    amount.init (crumbleBlock, apvts, "Amount", ParamIDs::amount);
-    stereo.init (crumbleBlock, apvts, "Stereo", ParamIDs::stereo);
-    feedback.init (crumbleBlock, apvts, "Feedback", ParamIDs::feedback);
+    addCombo (crumbleBlock, modeBox, ParamIDs::mode, Tables::modes, modeAtt, false);
+    freq.init (crumbleBlock, apvts, "Frequency", ParamIDs::freq, false);
+    rate.init (crumbleBlock, apvts, "Rate", ParamIDs::rate, false);
+    texture.init (crumbleBlock, apvts, "Texture", ParamIDs::texture, false);
+    amount.init (crumbleBlock, apvts, "Amount", ParamIDs::amount, false);
+    stereo.init (crumbleBlock, apvts, "Stereo", ParamIDs::stereo, false);
+    feedback.init (crumbleBlock, apvts, "Feedback", ParamIDs::feedback, false);
 
     // Bitcrush
-    bcFreq.init (bitBlock, apvts, "Frequency", ParamIDs::bcFreq);
-    bits.init (bitBlock, apvts, "Bits", ParamIDs::bits);
-    quantize.init (bitBlock, apvts, "Quantize", ParamIDs::quantize);
-    dither.init (bitBlock, apvts, "Dither", ParamIDs::dither);
-    adcQ.init (bitBlock, apvts, "ADC Q", ParamIDs::adcQ);
-    dacQ.init (bitBlock, apvts, "DAC Q", ParamIDs::dacQ);
-
-    // Wet filter
-    fltTarget = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::fltTarget), Tables::targets);
-    filterBlock.addAndMakeVisible (*fltTarget);
-    lowCut.init (filterBlock, apvts, "Low Cut", ParamIDs::lowCut);
-    highCut.init (filterBlock, apvts, "High Cut", ParamIDs::highCut, true);
+    bcFreq.init (bitBlock, apvts, "Frequency", ParamIDs::bcFreq, false);
+    bits.init (bitBlock, apvts, "Bits", ParamIDs::bits, false);
+    quantize.init (bitBlock, apvts, "Quantize", ParamIDs::quantize, false);
+    dither.init (bitBlock, apvts, "Dither", ParamIDs::dither, false);
+    adcQ.init (bitBlock, apvts, "ADC Q", ParamIDs::adcQ, false);
+    dacQ.init (bitBlock, apvts, "DAC Q", ParamIDs::dacQ, false);
 
     // Color
-    addCombo (colorBlock, driveTypeBox, ParamIDs::driveType, Tables::driveTypes, driveTypeAtt);
-    colTarget = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::colTarget), Tables::targets);
+    addCombo (colorBlock, driveTypeBox, ParamIDs::driveType, Tables::driveTypes, driveTypeAtt, true);
+    colTarget = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::colTarget), Tables::targets, true);
     colorBlock.addAndMakeVisible (*colTarget);
-    drive.init (colorBlock, apvts, "Drive", ParamIDs::drive);
-    tone.init (colorBlock, apvts, "Tone", ParamIDs::tone);
-    squash.init (colorBlock, apvts, "Squash", ParamIDs::squash);
+    drive.init (colorBlock, apvts, "Drive", ParamIDs::drive, true);
+    tone.init (colorBlock, apvts, "Tone", ParamIDs::tone, true);
+    colMix.init (colorBlock, apvts, "Mix", ParamIDs::colMix, true);
+
+    // Comp
+    addCombo (compBlock, compModeBox, ParamIDs::compMode, Tables::compModes, compModeAtt, true);
+    compTarget = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::compTarget), Tables::targets, true);
+    compBlock.addAndMakeVisible (*compTarget);
+    ottDepth.init (compBlock, apvts, "Depth", ParamIDs::ottDepth, true);
+    ottTime.init (compBlock, apvts, "Time", ParamIDs::ottTime, true);
+    ottUp.init (compBlock, apvts, "Up", ParamIDs::ottUp, true);
+    ottDown.init (compBlock, apvts, "Down", ParamIDs::ottDown, true);
+    glueThresh.init (compBlock, apvts, "Thresh", ParamIDs::glueThresh, true);
+    glueRatio.init (compBlock, apvts, "Ratio", ParamIDs::glueRatio, true);
+    glueAttack.init (compBlock, apvts, "Attack", ParamIDs::glueAttack, true);
+    glueRelease.init (compBlock, apvts, "Release", ParamIDs::glueRelease, true);
+    compMix.init (compBlock, apvts, "Mix", ParamIDs::compMix, true);
 
     // Tremolo
-    addCombo (tremBlock, trShapeBox, ParamIDs::trShape, Tables::trShapes, trShapeAtt);
-    trTarget = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::trTarget), Tables::targets);
+    addCombo (tremBlock, trShapeBox, ParamIDs::trShape, Tables::trShapes, trShapeAtt, true);
+    trTarget = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::trTarget), Tables::targets, true);
     tremBlock.addAndMakeVisible (*trTarget);
-    trDepth.init (tremBlock, apvts, "Depth", ParamIDs::trDepth);
-    trRate.init (tremBlock, apvts, "Rate", ParamIDs::trRate);
-    trPan.init (tremBlock, apvts, "Pan", ParamIDs::trPan);
+    trDepth.init (tremBlock, apvts, "Depth", ParamIDs::trDepth, true);
+    trRate.init (tremBlock, apvts, String::fromUTF8 ("Rate \xe2\x96\xbe"), ParamIDs::trRate, true);
+    trMs.init (tremBlock, apvts, String::fromUTF8 ("Rate \xe2\x96\xbe"), ParamIDs::trMs, true);
+    trStereo.init (tremBlock, apvts, "Stereo", ParamIDs::trPan, true);
+    for (auto* k : { &trRate, &trMs })
+    {
+        k->label.setInterceptsMouseClicks (true, false);
+        k->label.setMouseCursor (MouseCursor::PointingHandCursor);
+        k->label.onClick = [this]
+        {
+            const int current = roundToInt (proc.apvts.getRawParameterValue (ParamIDs::trRateMode)->load());
+            PopupMenu m;
+            m.addItem (1, "Sync (note values)", true, current == 0);
+            m.addItem (2, "Free (milliseconds)", true, current == 1);
+            m.showMenuAsync (PopupMenu::Options().withTargetComponent (current == 0 ? &trRate.label : &trMs.label),
+                             [this] (int r) { if (r > 0) setChoice (ParamIDs::trRateMode, r - 1); });
+        };
+    }
 
     // Mix
     autoGainButton.setWantsKeyboardFocus (false);
+    autoGainButton.getProperties().set ("fontSize", 12.0);
     mixBlock.addAndMakeVisible (autoGainButton);
     autoGainAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (apvts, ParamIDs::autoGain, autoGainButton);
-    mix.init (mixBlock, apvts, "Mix", ParamIDs::mix);
+    mix.init (mixBlock, apvts, "Mix", ParamIDs::mix, true);
 
     // Clip
-    clipMode = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::clipMode), Tables::clipModes);
+    clipMode = std::make_unique<Segmented> (*apvts.getParameter (ParamIDs::clipMode), Tables::clipModes, true);
     clipBlock.addAndMakeVisible (*clipMode);
-    ceiling.init (clipBlock, apvts, "Ceiling", ParamIDs::ceiling);
+    ceiling.init (clipBlock, apvts, "Ceiling", ParamIDs::ceiling, true);
+    ceiling.slider.onDragStart = [this] { scope.touchCeiling (true); };
+    ceiling.slider.onDragEnd = [this] { scope.touchCeiling (false); };
+    ceiling.slider.onValueChange = [this]
+    {
+        if (ceiling.slider.isMouseOverOrDragging())
+            scope.touchCeiling (ceiling.slider.isMouseButtonDown());
+    };
 
-    allKnobs = { &freq, &rate, &texture, &amount, &stereo, &feedback, &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ,
-                 &lowCut, &highCut, &drive, &tone, &squash, &trDepth, &trRate, &trPan, &mix, &ceiling };
-
+    // Overlays
     content.addChildComponent (about);
+    content.addChildComponent (tour);
+    content.addChildComponent (welcome);
+    tour.resolveTarget = [this] (const String& name) { return tourTarget (name); };
+    tour.onStep = [this] (const String& name)
+    {
+        if (name == "pills" || name == "viewSwitch")
+            scope.setView (ScopeView::View::eq);
+        else if (name == "scope" || name == "follow")
+            scope.setView (ScopeView::View::wave);
+    };
+    tour.onFinish = [] { saveSetting ("tour", "never"); };
+    welcome.onLanguage = [this] (Help::Lang l)
+    {
+        lang = l;
+        saveSetting ("helpLang", l == Help::Lang::ru ? "ru" : "en");
+        applyHelp();
+    };
+    welcome.onChoice = [this] (int choice)
+    {
+        welcome.setVisible (false);
+        if (choice == 0)
+            tour.start (lang);
+        else if (choice == 2)
+            saveSetting ("tour", "never");
+    };
 
-    // Size and theme from the saved settings
-    shownOrder = proc.apvts.getRawParameterValue (order)->load() > 0.5f;
+    scope.onBarsChanged = [] (int i) { saveSetting ("bars", String (i)); };
+    scope.setBarsIndex (loadSetting ("bars", "2").getIntValue());
+
+    // Settings
+    helpOn = loadSetting ("help", "on") != "off";
+    lang = loadSetting ("helpLang", "en") == "ru" ? Help::Lang::ru : Help::Lang::en;
+    shownBitFirst = tentativeBitFirst = proc.apvts.getRawParameterValue (order)->load() > 0.5f;
+    {
+        const int idx = jlimit (0, 5, roundToInt (proc.apvts.getRawParameterValue (chain)->load()));
+        for (int k = 0; k < 3; ++k)
+            shownChain[k] = tentativeChain[k] = Tables::chainOrders[idx][k];
+    }
     applyTheme (Theme::byName (loadSetting ("theme", "Asphalt")), false);
+    welcome.setLang (lang);
+    applyHelp();
     scale = jlimit (0.6f, 2.0f, loadSetting ("scale", "1.0").getFloatValue());
 
     setResizable (true, true);
@@ -142,6 +204,12 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     if (auto* c = getConstrainer())
         c->setFixedAspectRatio ((double) baseW / (double) baseH);
     setSize (roundToInt (baseW * scale), roundToInt (baseH * scale));
+
+    if (loadSetting ("tour", "") != "never" && ! askedThisRun)
+    {
+        askedThisRun = true;
+        showWelcome();
+    }
 
     timerCallback();
     startTimerHz (30);
@@ -151,9 +219,144 @@ CrumbleEditor::~CrumbleEditor()
 {
     stopTimer();
     saveSetting ("scale", String (scale, 3));
+    tooltipWindow.reset();
     setLookAndFeel (nullptr);
 }
 
+void CrumbleEditor::setChoice (const char* id, int index)
+{
+    if (auto* param = proc.apvts.getParameter (id))
+    {
+        param->beginChangeGesture();
+        param->setValueNotifyingHost (param->convertTo0to1 ((float) index));
+        param->endChangeGesture();
+    }
+}
+
+//==============================================================================
+int CrumbleEditor::widthOf (const Block* b) const
+{
+    if (b == &crumbleBlock) return crumbleW;
+    if (b == &bitBlock) return bitW;
+    if (b == &colorBlock) return colorW;
+    if (b == &compBlock) return compW;
+    if (b == &tremBlock) return tremW;
+    return mixW;
+}
+
+Block* CrumbleEditor::movable (int index)
+{
+    return index == 0 ? &colorBlock : (index == 1 ? &compBlock : &tremBlock);
+}
+
+int CrumbleEditor::row2SlotX (const int order[3], int index) const
+{
+    const int widths[3] = { colorW, compW, tremW };
+    int x = X0;
+    for (int k = 0; k < 3; ++k)
+    {
+        if (order[k] == index)
+            return x;
+        x += widths[order[k]] + row2Gap;
+    }
+    return x;
+}
+
+void CrumbleEditor::layoutRow1 (bool bitFirst, bool animate, const Block* skip)
+{
+    const Rectangle<int> crumbleR (bitFirst ? X1 - crumbleW : X0, row1Y, crumbleW, row1H);
+    const Rectangle<int> bitR (bitFirst ? X0 : X1 - bitW, row1Y, bitW, row1H);
+    auto& anim = Desktop::getInstance().getAnimator();
+    for (auto [blk, r] : { std::pair<Block*, Rectangle<int>> { &crumbleBlock, crumbleR }, { &bitBlock, bitR } })
+    {
+        if (blk == skip)
+            continue;
+        if (animate) anim.animateComponent (blk, r, 1.0f, 200, false, 1.0, 0.0);
+        else         blk->setBounds (r);
+    }
+}
+
+void CrumbleEditor::layoutRow2 (const int order[3], bool animate, const Block* skip)
+{
+    auto& anim = Desktop::getInstance().getAnimator();
+    for (int i = 0; i < 3; ++i)
+    {
+        auto* blk = movable (i);
+        if (blk == skip)
+            continue;
+        const Rectangle<int> r (row2SlotX (order, i), row2Y, widthOf (blk), row2H);
+        if (animate) anim.animateComponent (blk, r, 1.0f, 200, false, 1.0, 0.0);
+        else         blk->setBounds (r);
+    }
+    mixBlock.setBounds (X0 + colorW + compW + tremW + 3 * row2Gap, row2Y, mixW, row2H);
+    clipBlock.setBounds (X1 - clipW, row2Y, clipW, row2H);
+}
+
+void CrumbleEditor::dragStart (Block& b)
+{
+    dragging = &b;
+    dragOriginX = b.getX();
+    b.toFront (false);
+    tentativeBitFirst = shownBitFirst;
+    std::copy (shownChain, shownChain + 3, tentativeChain);
+    content.repaint();
+}
+
+void CrumbleEditor::dragMove (Block& b, int dx)
+{
+    if (&b == &crumbleBlock || &b == &bitBlock)
+    {
+        const int x = jlimit (X0, X1 - b.getWidth(), dragOriginX + dx);
+        b.setTopLeftPosition (x, row1Y);
+        // Compare the dragged block with the other block's resting place
+        const auto& other = (&b == &crumbleBlock) ? bitBlock : crumbleBlock;
+        const int otherCentre = (&other == &bitBlock) ? (tentativeBitFirst ? X0 + bitW / 2 : X1 - bitW / 2)
+                                                      : (tentativeBitFirst ? X1 - crumbleW / 2 : X0 + crumbleW / 2);
+        const bool draggedFirst = b.getBounds().getCentreX() < otherCentre;
+        const bool newBitFirst = (&b == &bitBlock) ? draggedFirst : ! draggedFirst;
+        if (newBitFirst != tentativeBitFirst)
+        {
+            tentativeBitFirst = newBitFirst;
+            layoutRow1 (tentativeBitFirst, true, &b);
+        }
+        return;
+    }
+
+    const int maxX = X0 + colorW + compW + tremW + 2 * row2Gap - b.getWidth();
+    b.setTopLeftPosition (jlimit (X0, maxX, dragOriginX + dx), row2Y);
+    int idx[3] = { 0, 1, 2 };
+    float centre[3];
+    for (int i = 0; i < 3; ++i)
+        centre[i] = movable (i) == &b ? (float) b.getBounds().getCentreX()
+                                      : (float) row2SlotX (tentativeChain, i) + (float) widthOf (movable (i)) * 0.5f;
+    std::sort (idx, idx + 3, [&] (int a, int c) { return centre[a] < centre[c]; });
+    if (! std::equal (idx, idx + 3, tentativeChain))
+    {
+        std::copy (idx, idx + 3, tentativeChain);
+        layoutRow2 (tentativeChain, true, &b);
+    }
+}
+
+void CrumbleEditor::dragEnd (Block& b)
+{
+    if (&b == &crumbleBlock || &b == &bitBlock)
+    {
+        shownBitFirst = tentativeBitFirst;
+        setChoice (ParamIDs::order, tentativeBitFirst ? 1 : 0);
+        dragging = nullptr;
+        layoutRow1 (shownBitFirst, true, nullptr);
+    }
+    else
+    {
+        std::copy (tentativeChain, tentativeChain + 3, shownChain);
+        setChoice (ParamIDs::chain, Tables::chainIndexFor (shownChain));
+        dragging = nullptr;
+        layoutRow2 (shownChain, true, nullptr);
+    }
+    content.repaint();
+}
+
+//==============================================================================
 void CrumbleEditor::resized()
 {
     scale = (float) getWidth() / (float) baseW;
@@ -162,105 +365,99 @@ void CrumbleEditor::resized()
 
     presetBar.setBounds (466, 24, 330, 30);
     gear.setBounds (X1 - 40, 24, 40, 30);
-    scope.setBounds (X0, 80, X1 - X0, 238);
+    scope.setBounds (X0, 80, X1 - X0, 357);
     inCol.setBounds (10, 10, 72, baseH - 20);
     outCol.setBounds (baseW - 82, 10, 72, baseH - 20);
     about.setBounds (0, 0, baseW, baseH);
+    tour.setBounds (0, 0, baseW, baseH);
+    welcome.setBounds (0, 0, baseW, baseH);
 
-    // Row 2
-    const int widths[5] = { 164, 236, 236, 130, 130 };
-    const int gap = (X1 - X0 - (164 + 236 + 236 + 130 + 130)) / 4;
-    int x = X0;
-    Block* row2[5] = { &filterBlock, &colorBlock, &tremBlock, &mixBlock, &clipBlock };
-    for (int i = 0; i < 5; ++i)
-    {
-        row2[i]->setBounds (x, row2Y, widths[i], rowH);
-        x += widths[i] + gap;
-    }
-    if (clipBlock.getRight() != X1)
-        clipBlock.setBounds (X1 - 130, row2Y, 130, rowH);
+    layoutRow1 (shownBitFirst, false, nullptr);
+    layoutRow2 (shownChain, false, nullptr);
 
     // Inside the blocks
-    const int ctlY = 32, knobY = 62;
-    modeBox.setBounds (12, ctlY, 120, 24);
+    modeBox.setBounds (14, 32, 124, 24);
+    Knob* top[5] = { &freq, &texture, &amount, &stereo, &feedback };
     for (int i = 0; i < 5; ++i)
-    {
-        Knob* k[5] = { &freq, &texture, &amount, &stereo, &feedback };
-        k[i]->setBounds (12 + i * 78, knobY, 78);
-        if (i == 0)
-            rate.setBounds (12, knobY, 78);
-    }
-    Knob* bk[6] = { &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ };
+        top[i]->setBounds (14 + i * 80, 76, 80);
+    rate.setBounds (14, 76, 80);
+    Knob* bc[6] = { &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ };
     for (int i = 0; i < 6; ++i)
-        bk[i]->setBounds (12 + i * 78, knobY, 78);
+        bc[i]->setBounds (14 + i * 80, 76, 80);
 
-    fltTarget->setBounds (12, ctlY, fltTarget->getIdealWidth(), 24);
-    lowCut.setBounds (10, knobY, 72);
-    highCut.setBounds (82, knobY, 72);
+    const int cy = 32, ky = 62;
+    driveTypeBox.setBounds (10, cy, 92, 22);
+    colTarget->setBounds (108, cy, colTarget->getIdealWidth(), 22);
+    drive.setBounds (11, ky, 58);
+    tone.setBounds (69, ky, 58);
+    colMix.setBounds (127, ky, 58);
 
-    driveTypeBox.setBounds (12, ctlY, 100, 24);
-    colTarget->setBounds (120, ctlY, colTarget->getIdealWidth(), 24);
-    drive.setBounds (10, knobY, 72);
-    tone.setBounds (82, knobY, 72);
-    squash.setBounds (154, knobY, 72);
-
-    trShapeBox.setBounds (12, ctlY, 106, 24);
-    trTarget->setBounds (126, ctlY, trTarget->getIdealWidth(), 24);
-    trDepth.setBounds (10, knobY, 72);
-    trRate.setBounds (82, knobY, 72);
-    trPan.setBounds (154, knobY, 72);
-
-    autoGainButton.setBounds (8, ctlY, 116, 24);
-    mix.setBounds (26, knobY, 78);
-
-    clipMode->setBounds (12, ctlY, clipMode->getIdealWidth(), 24);
-    ceiling.setBounds (26, knobY, 78);
-
-    layoutRows (false);
-}
-
-void CrumbleEditor::layoutRows (bool animate)
-{
-    const bool bitFirst = shownOrder;
-    const Rectangle<int> crumbleR (bitFirst ? X1 - crumbleW : X0, row1Y, crumbleW, rowH);
-    const Rectangle<int> bitR (bitFirst ? X0 : X1 - bitW, row1Y, bitW, rowH);
-    const Rectangle<int> swapR (bitFirst ? X0 + bitW : X0 + crumbleW, row1Y, swapW, rowH);
-    if (animate)
+    compModeBox.setBounds (10, cy, 92, 22);
+    compTarget->setBounds (108, cy, compTarget->getIdealWidth(), 22);
+    Knob* ott[4] = { &ottDepth, &ottTime, &ottUp, &ottDown };
+    Knob* glue[4] = { &glueThresh, &glueRatio, &glueAttack, &glueRelease };
+    for (int i = 0; i < 4; ++i)
     {
-        auto& anim = Desktop::getInstance().getAnimator();
-        anim.animateComponent (&crumbleBlock, crumbleR, 1.0f, 260, false, 1.0, 0.0);
-        anim.animateComponent (&bitBlock, bitR, 1.0f, 260, false, 1.0, 0.0);
+        ott[i]->setBounds (11 + i * 58, ky, 58);
+        glue[i]->setBounds (11 + i * 58, ky, 58);
     }
-    else
-    {
-        crumbleBlock.setBounds (crumbleR);
-        bitBlock.setBounds (bitR);
-    }
-    swapButton.setBounds (swapR.withSizeKeepingCentre (48, 48));
+    compMix.setBounds (11 + 4 * 58, ky, 58);
+
+    trShapeBox.setBounds (10, cy, 96, 22);
+    trTarget->setBounds (112, cy, trTarget->getIdealWidth(), 22);
+    trDepth.setBounds (11, ky, 58);
+    trRate.setBounds (69, ky, 58);
+    trMs.setBounds (69, ky, 58);
+    trStereo.setBounds (127, ky, 58);
+
+    autoGainButton.setBounds (6, cy, 94, 22);
+    mix.setBounds ((mixW - 58) / 2, ky, 58);
+    clipMode->setBounds (10, cy, clipMode->getIdealWidth(), 22);
+    ceiling.setBounds ((clipW - 58) / 2, ky, 58);
 }
 
 void CrumbleEditor::timerCallback()
 {
-    // Meters
+    using namespace ParamIDs;
+    auto raw = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
+
     inCol.push (proc.inPeak[0].exchange (0.0f), proc.inPeak[1].exchange (0.0f));
     outCol.push (proc.outPeak[0].exchange (0.0f), proc.outPeak[1].exchange (0.0f));
 
-    // Block order changed (button, automation or preset)
-    const bool order = proc.apvts.getRawParameterValue (ParamIDs::order)->load() > 0.5f;
-    if (order != shownOrder)
+    // Block order changed from outside (preset, automation)
+    if (dragging == nullptr)
     {
-        shownOrder = order;
-        layoutRows (true);
+        const bool bitFirst = raw (order) > 0.5f;
+        if (bitFirst != shownBitFirst)
+        {
+            shownBitFirst = tentativeBitFirst = bitFirst;
+            layoutRow1 (bitFirst, true, nullptr);
+            content.repaint();
+        }
+        const int idx = jlimit (0, 5, roundToInt (raw (chain)));
+        if (! std::equal (shownChain, shownChain + 3, Tables::chainOrders[idx]))
+        {
+            std::copy (Tables::chainOrders[idx], Tables::chainOrders[idx] + 3, shownChain);
+            std::copy (shownChain, shownChain + 3, tentativeChain);
+            layoutRow2 (shownChain, true, nullptr);
+            content.repaint();
+        }
     }
 
-    // Mode-dependent knobs
-    const int mode = roundToInt (proc.apvts.getRawParameterValue (ParamIDs::mode)->load());
-    freq.slider.setVisible (mode != 1);
-    freq.label.setVisible (mode != 1);
-    rate.slider.setVisible (mode == 1);
-    rate.label.setVisible (mode == 1);
+    // Knobs that depend on a mode
+    const int crMode = roundToInt (raw (mode));
+    freq.setVisible (crMode != 1);
+    rate.setVisible (crMode == 1);
+    const bool glueMode = roundToInt (raw (compMode)) == 1;
+    for (auto* k : { &ottDepth, &ottTime, &ottUp, &ottDown })
+        k->setVisible (! glueMode);
+    for (auto* k : { &glueThresh, &glueRatio, &glueAttack, &glueRelease })
+        k->setVisible (glueMode);
+    const bool freeRate = roundToInt (raw (trRateMode)) == 1;
+    trRate.setVisible (! freeRate);
+    trMs.setVisible (freeRate);
 
-    // Dim the contents of switched-off blocks
+    // Dim switched-off blocks
     auto dim = [] (std::initializer_list<Knob*> knobs, std::initializer_list<Component*> others, bool off)
     {
         for (auto* k : knobs) k->setDimmed (off);
@@ -268,29 +465,112 @@ void CrumbleEditor::timerCallback()
     };
     const bool crOff = ! crumbleBlock.isOn();
     dim ({ &freq, &rate, &amount, &stereo, &feedback }, { &modeBox }, crOff);
-    texture.setDimmed (crOff || mode != 2);
+    texture.setDimmed (crOff || crMode != 2);
     dim ({ &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ }, {}, ! bitBlock.isOn());
-    dim ({ &lowCut, &highCut }, { fltTarget.get() }, ! filterBlock.isOn());
-    dim ({ &drive, &tone, &squash }, { &driveTypeBox, colTarget.get() }, ! colorBlock.isOn());
-    dim ({ &trDepth, &trRate, &trPan }, { &trShapeBox, trTarget.get() }, ! tremBlock.isOn());
-    dim ({ &ceiling }, { clipMode.get() }, ! clipBlock.isOn());
+    dim ({ &drive, &tone, &colMix }, { &driveTypeBox }, ! colorBlock.isOn());
+    dim ({ &ottDepth, &ottTime, &ottUp, &ottDown, &glueThresh, &glueRatio, &glueAttack, &glueRelease, &compMix }, { &compModeBox }, ! compBlock.isOn());
+    dim ({ &trDepth, &trRate, &trMs, &trStereo }, { &trShapeBox }, ! tremBlock.isOn());
+    dim ({ &ceiling }, {}, ! clipBlock.isOn());
+
+    // Wet / FX only mean something when Crumble or Bitcrush is on
+    const bool fx = raw (crOn) > 0.5f || raw (bcOn) > 0.5f;
+    for (auto* s : { colTarget.get(), compTarget.get(), trTarget.get() })
+    {
+        s->setLocked (! fx, 1);
+        s->setTooltip (helpOn ? Help::tip (fx ? "wetAll" : "wetOff", lang) : String());
+    }
+    scope.setFxAvailable (fx);
+    clipMode->setAlpha (clipBlock.isOn() ? 1.0f : 0.4f);
 }
 
+//==============================================================================
 void CrumbleEditor::applyTheme (const Theme& t, bool remember)
 {
     theme = &t;
     laf.setTheme (t);
-    for (auto* k : allKnobs)
-        k->label.setColour (Label::textColourId, t.mute);
     if (remember)
         saveSetting ("theme", t.name);
     buildBackground();
-    tintLogo();
-    about.logo = logo;
     content.sendLookAndFeelChange();
-    for (auto* k : allKnobs)
+    for (auto* k : { &freq, &rate, &texture, &amount, &stereo, &feedback, &bcFreq, &bits, &quantize, &dither, &adcQ, &dacQ,
+                     &drive, &tone, &colMix, &ottDepth, &ottTime, &ottUp, &ottDown, &glueThresh, &glueRatio, &glueAttack,
+                     &glueRelease, &compMix, &trDepth, &trStereo, &mix, &ceiling, &inCol.knob, &outCol.knob })
         k->label.setColour (Label::textColourId, t.mute);
+    for (auto* k : { &trRate, &trMs })
+        k->label.setColour (Label::textColourId, t.ink);
+    welcome.setLang (lang);
     content.repaint();
+}
+
+void CrumbleEditor::applyHelp()
+{
+    if (helpOn && tooltipWindow == nullptr)
+    {
+        tooltipWindow = std::make_unique<TooltipWindow> (this, 600);
+        tooltipWindow->setLookAndFeel (&laf);
+    }
+    else if (! helpOn)
+    {
+        tooltipWindow.reset();
+    }
+
+    auto tip = [this] (const char* key) { return helpOn ? Help::tip (key, lang) : String(); };
+    inCol.knob.setTooltip (tip ("input"));
+    outCol.knob.setTooltip (tip ("output"));
+    inCol.setTooltip (tip ("inMeter"));
+    outCol.setTooltip (tip ("outMeter"));
+    presetBar.setTooltip (tip ("presetName"));
+    presetBar.prev.setTooltip (tip ("prev"));
+    presetBar.next.setTooltip (tip ("next"));
+    presetBar.save.setTooltip (tip ("save"));
+    gear.setTooltip (tip ("gear"));
+    for (auto* b : { &crumbleBlock, &bitBlock, &colorBlock, &compBlock, &tremBlock })
+    {
+        b->setTooltip (tip ("drag"));
+        if (auto* pw = b->getPowerButton())
+            pw->setTooltip (tip ("power"));
+    }
+    if (auto* pw = clipBlock.getPowerButton())
+        pw->setTooltip (tip ("power"));
+
+    modeBox.setTooltip (tip ("mode"));
+    freq.setTooltip (tip ("freq"));
+    rate.setTooltip (tip ("rateSync"));
+    texture.setTooltip (tip ("texture"));
+    amount.setTooltip (tip ("amount"));
+    stereo.setTooltip (tip ("stereo"));
+    feedback.setTooltip (tip ("feedback"));
+    bcFreq.setTooltip (tip ("bcFreq"));
+    bits.setTooltip (tip ("bits"));
+    quantize.setTooltip (tip ("quantize"));
+    dither.setTooltip (tip ("dither"));
+    adcQ.setTooltip (tip ("adcQ"));
+    dacQ.setTooltip (tip ("dacQ"));
+    driveTypeBox.setTooltip (tip ("driveType"));
+    drive.setTooltip (tip ("drive"));
+    tone.setTooltip (tip ("tone"));
+    colMix.setTooltip (tip ("colMix"));
+    compModeBox.setTooltip (tip ("compMode"));
+    ottDepth.setTooltip (tip ("ottDepth"));
+    ottTime.setTooltip (tip ("ottTime"));
+    ottUp.setTooltip (tip ("ottUp"));
+    ottDown.setTooltip (tip ("ottDown"));
+    glueThresh.setTooltip (tip ("glueThresh"));
+    glueRatio.setTooltip (tip ("glueRatio"));
+    glueAttack.setTooltip (tip ("glueAttack"));
+    glueRelease.setTooltip (tip ("glueRelease"));
+    compMix.setTooltip (tip ("compMix"));
+    trShapeBox.setTooltip (tip ("trShape"));
+    trDepth.setTooltip (tip ("trDepth"));
+    trRate.setTooltip (tip ("trRate"));
+    trMs.setTooltip (tip ("trRate"));
+    trStereo.setTooltip (tip ("trStereo"));
+    autoGainButton.setTooltip (tip ("autoGain"));
+    mix.setTooltip (tip ("mix"));
+    clipMode->setTooltip (tip ("clipMode"));
+    ceiling.setTooltip (tip ("ceiling"));
+    scope.setHelp (helpOn, lang);
+    timerCallback();
 }
 
 void CrumbleEditor::setScale (float s, bool remember)
@@ -303,55 +583,84 @@ void CrumbleEditor::setScale (float s, bool remember)
 
 void CrumbleEditor::showSettingsMenu()
 {
-    PopupMenu themes, sizes, menu;
+    PopupMenu themes, sizes, help, langs, menu;
     int id = 1;
     for (const auto& t : Theme::all())
         themes.addItem (id++, t.name, true, &t == theme);
     const float scales[] = { 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
     for (int i = 0; i < 5; ++i)
         sizes.addItem (100 + i, String (roundToInt (scales[i] * 100)) + "%", true, std::abs (scale - scales[i]) < 0.01f);
+    help.addItem (200, "On", true, helpOn);
+    help.addItem (201, "Off", true, ! helpOn);
+    langs.addItem (300, "English", true, lang == Help::Lang::en);
+    langs.addItem (301, String::fromUTF8 ("Русский"), true, lang == Help::Lang::ru);
     menu.addSubMenu ("Theme", themes);
     menu.addSubMenu ("Size", sizes);
+    menu.addSubMenu ("Help", help);
+    menu.addSubMenu ("Help language", langs);
+    menu.addSeparator();
+    menu.addItem (400, "Start tour");
     menu.showMenuAsync (PopupMenu::Options().withTargetComponent (&gear), [this, scales] (int r)
     {
         if (r >= 1 && r <= (int) Theme::all().size())
             applyTheme (Theme::all()[(size_t) (r - 1)], true);
         else if (r >= 100 && r < 105)
             setScale (scales[r - 100], true);
+        else if (r == 200 || r == 201)
+        {
+            helpOn = r == 200;
+            saveSetting ("help", helpOn ? "on" : "off");
+            applyHelp();
+        }
+        else if (r == 300 || r == 301)
+        {
+            lang = r == 301 ? Help::Lang::ru : Help::Lang::en;
+            saveSetting ("helpLang", r == 301 ? "ru" : "en");
+            welcome.setLang (lang);
+            applyHelp();
+        }
+        else if (r == 400)
+            tour.start (lang);
     });
 }
 
 void CrumbleEditor::Content::mouseDown (const MouseEvent& e)
 {
-    if (logoArea.contains (e.getPosition()))
+    if (titleArea.contains (e.getPosition()))
     {
         editor.about.setVisible (true);
         editor.about.toFront (false);
     }
 }
 
-void CrumbleEditor::tintLogo()
+Rectangle<float> CrumbleEditor::tourTarget (const String& name)
 {
-    if (! logoRaw.isValid())
-        return;
-    logo = logoRaw.convertedToFormat (Image::ARGB);
-    logo.duplicateIfShared();
-    Image::BitmapData bd (logo, Image::BitmapData::readWrite);
-    const auto tint = theme->logo;
-    for (int y = 0; y < logo.getHeight(); ++y)
-        for (int x = 0; x < logo.getWidth(); ++x)
-        {
-            const auto c = bd.getPixelColour (x, y);
-            const float a = c.getFloatAlpha();
-            if (a <= 0.0f)
-                continue;
-            const float lum = (c.getFloatRed() + c.getFloatGreen() + c.getFloatBlue()) / 3.0f;
-            const float k = theme->lightBg ? lum : jlimit (0.0f, 1.3f, 0.30f + 0.95f * lum);
-            auto ch = [k] (float v) { return (uint8) jlimit (0, 255, roundToInt (v * k * 255.0f)); };
-            bd.setPixelColour (x, y, Colour (ch (tint.getFloatRed()), ch (tint.getFloatGreen()), ch (tint.getFloatBlue()), a));
-        }
+    auto area = [this] (Component& c) { return content.getLocalArea (&c, c.getLocalBounds()).toFloat(); };
+    auto knobArea = [this] (Knob& k, Component& parent) { return content.getLocalArea (&parent, k.getArea()).toFloat(); };
+    if (name == "inCol")      return area (inCol);
+    if (name == "outCol")     return area (outCol);
+    if (name == "presets")    return area (presetBar);
+    if (name == "gear")       return area (gear);
+    if (name == "scope")      return area (scope);
+    if (name == "follow")     return content.getLocalArea (&scope, scope.followArea()).toFloat();
+    if (name == "pills")      return content.getLocalArea (&scope, scope.pillsArea()).toFloat();
+    if (name == "viewSwitch") return content.getLocalArea (&scope, scope.viewSwitchArea().expanded (6, 5)).toFloat();
+    if (name == "crumble")    return area (crumbleBlock);
+    if (name == "bitcrush")   return area (bitBlock);
+    if (name == "color")      return area (colorBlock);
+    if (name == "comp")       return area (compBlock);
+    if (name == "tremolo")    return area (tremBlock);
+    if (name == "mix")        return area (mixBlock);
+    if (name == "clip")       return area (clipBlock);
+    if (name == "mode")       return area (modeBox).expanded (4.0f);
+    if (name == "amount")     return knobArea (amount, crumbleBlock).expanded (4.0f);
+    if (name == "texture")    return knobArea (freq, crumbleBlock).getUnion (knobArea (texture, crumbleBlock)).expanded (4.0f);
+    if (name == "stereo")     return knobArea (stereo, crumbleBlock).getUnion (knobArea (feedback, crumbleBlock)).expanded (4.0f);
+    if (name == "chain")      return area (colorBlock).getUnion (area (compBlock)).getUnion (area (tremBlock));
+    return {};
 }
 
+//==============================================================================
 void CrumbleEditor::buildBackground()
 {
     const auto& t = *theme;
@@ -384,7 +693,7 @@ void CrumbleEditor::buildBackground()
     }
 
     Random rnd (1234);
-    constexpr int gw = 30, gh = 18;
+    constexpr int gw = 30, gh = 22;
     float coarse[gw * gh];
     for (auto& v : coarse)
         v = rnd.nextFloat() * 14.0f - 7.0f;
@@ -406,14 +715,9 @@ void CrumbleEditor::buildBackground()
                               + coarse[(y0 + 1) * gw + x0] * (1 - tx) * ty + coarse[(y0 + 1) * gw + x0 + 1] * tx * ty;
                 const float n = c + (rnd.nextFloat() - 0.5f) * 30.0f;
                 if (rnd.nextFloat() < 0.004f)
-                {
-                    const float m = 0.4f + rnd.nextFloat() * 0.6f;
-                    bd.setPixelColour (x, y, t.bg.interpolatedWith (t.speck, m));
-                }
+                    bd.setPixelColour (x, y, t.bg.interpolatedWith (t.speck, 0.4f + rnd.nextFloat() * 0.6f));
                 else
-                {
                     bd.setPixelColour (x, y, Colour (ch (br + n), ch (bgc + n), ch (bb + n * 1.1f)));
-                }
             }
         }
     }
@@ -433,12 +737,47 @@ void CrumbleEditor::paintContent (Graphics& g)
     const auto& t = *theme;
     g.drawImage (background, Rectangle<float> (0.0f, 0.0f, (float) baseW, (float) baseH));
 
-    if (logo.isValid())
-        g.drawImage (logo, logoArea.toFloat(), RectanglePlacement::centred);
+    // Logo: vector, in the theme's colour (gold gradient in Luxe)
+    const auto la = logoArea.toFloat();
+    if (t.gloss)
+    {
+        ColourGradient gold (Colour (0xfff6dc9a), la.getX(), la.getY(), Colour (0xffa47a2c), la.getX(), la.getBottom(), false);
+        gold.addColour (0.55, Colour (0xffe8c46a));
+        Logo::draw (g, la, FillType (gold));
+    }
+    else
+    {
+        Logo::draw (g, la, FillType (t.logo));
+    }
     g.setColour (t.ink);
     g.setFont (uiFont (30.0f, true, 0.08f));
     g.drawText ("CRUMBLE", logoArea.getRight() + 12, 12, 320, 34, Justification::centredLeft);
     g.setColour (t.mute);
     g.setFont (uiFont (11.0f, true, 0.3f));
     g.drawText ("PRIMAL RAGE LAB", logoArea.getRight() + 14, 46, 320, 16, Justification::centredLeft);
+
+    // Arrows that show the signal path
+    if (dragging != nullptr)
+        return;
+    auto arrow = [&] (const Component& a, const Component& b)
+    {
+        const float x0 = (float) a.getRight(), x1 = (float) b.getX();
+        if (x1 - x0 < 8.0f)
+            return;
+        const float cx = 0.5f * (x0 + x1), cy = (float) a.getBounds().getCentreY();
+        const float half = jmin (7.0f, (x1 - x0) * 0.35f);
+        Path p;
+        p.startNewSubPath (cx - half, cy);
+        p.lineTo (cx + half, cy);
+        p.startNewSubPath (cx + half - 4.0f, cy - 4.0f);
+        p.lineTo (cx + half, cy);
+        p.lineTo (cx + half - 4.0f, cy + 4.0f);
+        g.setColour (t.accent.withAlpha (0.65f));
+        g.strokePath (p, PathStrokeType (2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+    };
+    if (shownBitFirst) arrow (bitBlock, crumbleBlock);
+    else               arrow (crumbleBlock, bitBlock);
+    const Component* row2[5] = { movable (shownChain[0]), movable (shownChain[1]), movable (shownChain[2]), &mixBlock, &clipBlock };
+    for (int i = 0; i < 4; ++i)
+        arrow (*row2[i], *row2[i + 1]);
 }

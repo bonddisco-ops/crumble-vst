@@ -12,10 +12,17 @@ public:
     void resized() override;
     void paint (juce::Graphics&) override {}
 
-    static constexpr int baseW = 1160, baseH = 744;
+    static constexpr int baseW = 1160, baseH = 850;
 
-    // For tests: switch theme without touching the saved settings
+    static juce::String loadSetting (const juce::String& key, const juce::String& fallback);
+    static void saveSetting (const juce::String& key, const juce::String& value);
+
+    // For tests and screenshots
     void setThemeByName (const juce::String& name) { applyTheme (Theme::byName (name), false); }
+    ScopeView& getScope() { return scope; }
+    void startTour (int step) { tour.start (lang); tour.showStep (step); }
+    void showWelcome() { welcome.setVisible (true); welcome.toFront (false); }
+    void touchCeiling() { scope.touchCeiling (true); }
 
 private:
     class Content : public juce::Component
@@ -31,51 +38,72 @@ private:
     void timerCallback() override;
     void paintContent (juce::Graphics&);
     void applyTheme (const Theme&, bool remember);
+    void applyHelp();
     void setScale (float scale, bool remember);
-    void layoutRows (bool animate);
     void showSettingsMenu();
     void buildBackground();
-    void tintLogo();
     void addCombo (juce::Component& parent, juce::ComboBox&, const char* paramId, const juce::StringArray& items,
-                   std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>&);
+                   std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>&, bool compact);
+    juce::Rectangle<float> tourTarget (const juce::String& name);
 
-    static juce::String loadSetting (const juce::String& key, const juce::String& fallback);
-    static void saveSetting (const juce::String& key, const juce::String& value);
+    // Block order and dragging
+    int widthOf (const Block*) const;
+    Block* movable (int index);   // 0 Color, 1 Comp, 2 Tremolo
+    void layoutRow1 (bool bitFirst, bool animate, const Block* skip);
+    void layoutRow2 (const int order[3], bool animate, const Block* skip);
+    int row2SlotX (const int order[3], int index) const;
+    void dragStart (Block&);
+    void dragMove (Block&, int dx);
+    void dragEnd (Block&);
+    void setChoice (const char* id, int index);
 
     CrumbleProcessor& proc;
     CrumbleLookAndFeel laf;           // first, so it outlives every component
     const Theme* theme = nullptr;
     Content content { *this };
-    juce::Image background, logoRaw, logo;
+    juce::Image background;
     float scale = 1.0f;
+    bool helpOn = true;
+    Help::Lang lang = Help::Lang::en;
+    std::unique_ptr<juce::TooltipWindow> tooltipWindow;
 
     PresetBar presetBar { proc };
-    IconButton gear { IconButton::Icon::gear }, swapButton { IconButton::Icon::swap };
+    IconButton gear { IconButton::Icon::gear };
     ScopeView scope { proc };
     MeterColumn inCol { "IN", proc.apvts, ParamIDs::input, "Input" };
     MeterColumn outCol { "OUT", proc.apvts, ParamIDs::output, "Output" };
 
-    Block crumbleBlock { "CRUMBLE", proc.apvts, ParamIDs::crOn };
-    Block bitBlock     { "BITCRUSH", proc.apvts, ParamIDs::bcOn };
-    Block filterBlock  { "WET FILTER", proc.apvts, ParamIDs::fltOn };
-    Block colorBlock   { "COLOR", proc.apvts, ParamIDs::colOn };
-    Block tremBlock    { "TREMOLO", proc.apvts, ParamIDs::trOn };
-    Block mixBlock     { "MIX", proc.apvts, nullptr };
-    Block clipBlock    { "CLIP", proc.apvts, ParamIDs::clipOn };
+    Block crumbleBlock { "CRUMBLE", proc.apvts, ParamIDs::crOn, true };
+    Block bitBlock     { "BITCRUSH", proc.apvts, ParamIDs::bcOn, true };
+    Block colorBlock   { "COLOR", proc.apvts, ParamIDs::colOn, true };
+    Block compBlock    { "COMP", proc.apvts, ParamIDs::compOn, true };
+    Block tremBlock    { "TREMOLO", proc.apvts, ParamIDs::trOn, true };
+    Block mixBlock     { "MIX", proc.apvts, nullptr, false };
+    Block clipBlock    { "CLIP", proc.apvts, ParamIDs::clipOn, false };
 
-    juce::ComboBox modeBox, driveTypeBox, trShapeBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, driveTypeAtt, trShapeAtt;
-    std::unique_ptr<Segmented> fltTarget, colTarget, trTarget, clipMode;
+    juce::ComboBox modeBox, driveTypeBox, compModeBox, trShapeBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, driveTypeAtt, compModeAtt, trShapeAtt;
+    std::unique_ptr<Segmented> colTarget, compTarget, trTarget, clipMode;
     juce::ToggleButton autoGainButton { "Auto gain" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoGainAtt;
 
     Knob freq, rate, texture, amount, stereo, feedback;
     Knob bcFreq, bits, quantize, dither, adcQ, dacQ;
-    Knob lowCut, highCut, drive, tone, squash, trDepth, trRate, trPan, mix, ceiling;
-    std::vector<Knob*> allKnobs;
+    Knob drive, tone, colMix;
+    Knob ottDepth, ottTime, ottUp, ottDown, glueThresh, glueRatio, glueAttack, glueRelease, compMix;
+    Knob trDepth, trRate, trMs, trStereo;
+    Knob mix, ceiling;
 
     AboutOverlay about;
-    bool shownOrder = false;
+    TourOverlay tour;
+    WelcomePrompt welcome;
+
+    bool shownBitFirst = false;
+    int shownChain[3] { 0, 1, 2 };
+    Block* dragging = nullptr;
+    int dragOriginX = 0;
+    bool tentativeBitFirst = false;
+    int tentativeChain[3] { 0, 1, 2 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrumbleEditor)
 };
