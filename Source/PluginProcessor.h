@@ -6,7 +6,7 @@
 #include "Dsp.h"
 #include "PresetManager.h"
 
-// Crumble 3.2 by Primal Rage Lab
+// Crumble 3.3 by Primal Rage Lab
 //
 //  IN -> PRE filter (FX: only what goes into the effect / All: everything)
 //     -> [Crumble <-> Bitcrush] -> effect = processed - clean

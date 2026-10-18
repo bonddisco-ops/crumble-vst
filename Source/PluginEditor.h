@@ -43,6 +43,7 @@ private:
     void computeLayout();
     void layoutInside();
     void showComp();
+    void mouseDown (const juce::MouseEvent&) override;
     void showSettingsMenu();
     void buildBackground();
     void addCombo (juce::Component& parent, juce::ComboBox&, const char* paramId, const juce::StringArray& items,

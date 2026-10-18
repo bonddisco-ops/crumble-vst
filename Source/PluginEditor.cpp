@@ -108,8 +108,20 @@ CrumbleEditor::CrumbleEditor (CrumbleProcessor& p)
     glueAttack.init (compBlock, apvts, "Attack", ParamIDs::glueAttack, true);
     glueRelease.init (compBlock, apvts, "Release", ParamIDs::glueRelease, true);
     compMix.init (compBlock, apvts, "Mix", ParamIDs::compMix, true);
+    // Touching the comp knobs shows the compressor on the screen: Glue on the waveform, OTT as three bands
     for (auto* k : { &ottDepth, &ottTime, &ottUp, &ottDown, &glueThresh, &glueRatio, &glueAttack, &glueRelease, &compMix })
-        k->slider.onDragStart = [this] { if (compBlock.isOn()) showComp(); };
+    {
+        auto* sl = &k->slider;
+        auto kind = [this, k]
+        {
+            if (k == &compMix) return roundToInt (proc.apvts.getRawParameterValue (ParamIDs::compMode)->load()) == 1 ? 1 : 2;
+            return (k == &glueThresh || k == &glueRatio || k == &glueAttack || k == &glueRelease) ? 1 : 2;
+        };
+        sl->onDragStart = [this, kind] { scope.touchComp (kind(), true); };
+        sl->onDragEnd = [this, kind] { scope.touchComp (kind(), false); };
+        sl->onValueChange = [this, kind, sl] { if (sl->isMouseOverOrDragging()) scope.touchComp (kind(), sl->isMouseButtonDown()); };
+    }
+    content.addMouseListener (this, true);   // grabbing any control outside the compressor sends its picture away
 
     // Tremolo
     addCombo (tremBlock, trShapeBox, ParamIDs::trShape, Tables::trShapes, trShapeAtt, true);
@@ -252,10 +264,17 @@ CrumbleEditor::~CrumbleEditor()
 
 void CrumbleEditor::showComp()
 {
-    if (roundToInt (proc.apvts.getRawParameterValue (ParamIDs::compMode)->load()) == 1)
-        scope.setView (ScopeView::View::wave);
-    else
-        scope.showOtt();
+    scope.touchComp (roundToInt (proc.apvts.getRawParameterValue (ParamIDs::compMode)->load()) == 1 ? 1 : 2, false);
+}
+
+void CrumbleEditor::mouseDown (const MouseEvent& e)
+{
+    auto* c = e.eventComponent;
+    if (c == nullptr || ! scope.isCompShown())
+        return;
+    if (c == &compBlock || compBlock.isParentOf (c) || c == &scope || scope.isParentOf (c))
+        return;
+    scope.dismissComp();
 }
 
 void CrumbleEditor::setChoice (const char* id, int index)
@@ -787,44 +806,49 @@ void CrumbleEditor::buildBackground()
         return;
     }
 
+    // brushed metal: light from above, fine grain, horizontal brushing, a few specks
     Random rnd (1234);
-    constexpr int gw = 30, gh = 22;
-    float coarse[gw * gh];
-    for (auto& v : coarse)
-        v = rnd.nextFloat() * 14.0f - 7.0f;
     {
-        Image::BitmapData bd (background, Image::BitmapData::writeOnly);
-        const float br = t.bg.getFloatRed() * 255.0f, bgc = t.bg.getFloatGreen() * 255.0f, bb = t.bg.getFloatBlue() * 255.0f;
-        auto ch = [] (float f) { return (uint8) jlimit (0, 255, roundToInt (f)); };
+        Graphics g (background);
+        ColourGradient body (t.bg.brighter (t.lightBg ? 0.08f : 0.28f), 0.0f, 0.0f, t.bg.darker (0.45f), 0.0f, (float) H, false);
+        body.addColour (0.35, t.bg);
+        g.setGradientFill (body);
+        g.fillAll();
+    }
+    {
+        Image::BitmapData bd (background, Image::BitmapData::readWrite);
         for (int y = 0; y < H; ++y)
-        {
-            const float fy = (float) y / (float) (H - 1) * (gh - 1);
-            const int y0 = jmin (gh - 2, (int) fy);
-            const float ty = fy - (float) y0;
             for (int x = 0; x < W; ++x)
             {
-                const float fx = (float) x / (float) (W - 1) * (gw - 1);
-                const int x0 = jmin (gw - 2, (int) fx);
-                const float tx = fx - (float) x0;
-                const float c = coarse[y0 * gw + x0] * (1 - tx) * (1 - ty) + coarse[y0 * gw + x0 + 1] * tx * (1 - ty)
-                              + coarse[(y0 + 1) * gw + x0] * (1 - tx) * ty + coarse[(y0 + 1) * gw + x0 + 1] * tx * ty;
-                const float n = c + (rnd.nextFloat() - 0.5f) * 30.0f;
-                if (rnd.nextFloat() < 0.004f)
-                    bd.setPixelColour (x, y, t.bg.interpolatedWith (t.speck, 0.4f + rnd.nextFloat() * 0.6f));
-                else
-                    bd.setPixelColour (x, y, Colour (ch (br + n), ch (bgc + n), ch (bb + n * 1.1f)));
+                const auto c = bd.getPixelColour (x, y);
+                const int n = rnd.nextInt (t.lightBg ? 17 : 13) - (t.lightBg ? 8 : 6);
+                auto ch = [n] (uint8 v) { return (uint8) jlimit (0, 255, (int) v + n); };
+                bd.setPixelColour (x, y, Colour (ch (c.getRed()), ch (c.getGreen()), ch (c.getBlue())));
             }
-        }
     }
-
     Graphics g (background);
-    ColourGradient sheen (Colour (0xffb4c4dc).withAlpha (t.lightBg ? 0.10f : 0.06f), (float) W * 0.7f, (float) H * 0.12f,
-                          Colours::transparentWhite, (float) W * 1.05f, (float) H * 0.12f, true);
-    g.setGradientFill (sheen);
-    g.fillEllipse ((float) W * 0.35f, 0.0f, (float) W * 0.7f, (float) H * 0.3f);
+    const float k = (float) W / (float) (baseW * 2);    // brushing scales with the panel
+    for (int i = 0; i < (int) (2600.0f * (float) (W * H) / (float) (baseW * baseH * 4)); ++i)
+    {
+        const float y = rnd.nextFloat() * (float) H, x0 = rnd.nextFloat() * (float) W;
+        g.setColour ((rnd.nextBool() ? Colours::white : Colours::black).withAlpha (t.lightBg ? 0.05f : 0.045f));
+        g.drawLine (x0, y, x0 + (120.0f + rnd.nextFloat() * 640.0f) * k, y, 0.4f + rnd.nextFloat() * 1.4f);
+    }
+    if (! t.lightBg)
+        for (int i = 0; i < 900; ++i)
+        {
+            g.setColour (t.speck.withAlpha (rnd.nextFloat() * 0.25f));
+            g.fillRect ((float) rnd.nextInt (W), (float) rnd.nextInt (H), 2.0f, 2.0f);
+        }
+    ColourGradient key (Colours::white.withAlpha (t.lightBg ? 0.30f : 0.11f), (float) W * 0.3f, -160.0f,
+                        Colours::transparentWhite, (float) W * 0.3f, -160.0f + (float) H * 1.1f, true);
+    g.setGradientFill (key);
+    g.fillRect (0, 0, W, H);
     ColourGradient vig (Colours::transparentBlack, (float) W * 0.5f, (float) H * 0.45f, t.vignette, 0.0f, 0.0f, true);
     g.setGradientFill (vig);
     g.fillRect (0, 0, W, H);
+    g.setColour (Colours::white.withAlpha (0.10f));
+    g.fillRect (0, 0, W, 2);
 }
 
 void CrumbleEditor::paintContent (Graphics& g)

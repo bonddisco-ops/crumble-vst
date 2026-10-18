@@ -31,6 +31,15 @@ private:
 juce::Font uiFont (float height, bool bold = false, float kerning = 0.0f);
 const Theme& themeOf (const juce::Component&);
 
+// The metal look shared by every control: glass jewel lamps, raised keys, recesses milled into the panel
+namespace Metal
+{
+    void jewel (juce::Graphics&, juce::Point<float> centre, float radius, bool on, juce::Colour colour);
+    void key (juce::Graphics&, juce::Rectangle<float>, bool on, const Theme&, float corner = 6.0f, bool hover = false);
+    void milled (juce::Graphics&, juce::Rectangle<float>, float corner, const Theme&);
+    void screw (juce::Graphics&, juce::Point<float> centre, float angle);
+}
+
 // ---------------------------------------------------------------------------
 class ClickLabel : public juce::Label
 {
@@ -177,8 +186,11 @@ public:
     View getView() const { return view; }
     void selectFilter (bool post);
     void touchCeiling (bool dragging);
-    void showOtt();                       // EQ screen with the three OTT bands instead of the filters
-    bool isOttShown() const { return ottFocus; }
+    // Compressor pictures (1 Glue on the wave, 2 OTT bands) are shown only while its knobs are set:
+    // 5 s after the last touch, or as soon as any other control is grabbed, the screen goes back
+    void touchComp (int kind, bool held);
+    void dismissComp();
+    bool isCompShown() const { return compKind != 0; }
     void setHelp (bool enabled, Help::Lang);
     void setFxAvailable (bool available);
     void setBarsIndex (int i);
@@ -205,10 +217,10 @@ private:
     void paintEq (juce::Graphics&, const Theme&);
     void paintOtt (juce::Graphics&, const Theme&);
     void paintGluePanel (juce::Graphics&, const Theme&);
-    void setOttFocus (bool);
     bool glueOn() const;
     bool ottOn() const;
-    juce::Rectangle<float> ottChip() const;
+    bool glueVisible() const { return compShownKind == 1 && compFade > 0.001f && glueOn(); }
+    bool ottVisible() const { return compShownKind == 2 && compFade > 0.001f && ottOn(); }
     juce::Path bulgedRect (juce::Rectangle<float>) const;
     void updateSpectrum();
     void updateTooltip();
@@ -253,9 +265,13 @@ private:
     juce::RangedAudioParameter* glueThreshParam = nullptr;
 
     // Compressor display (smoothed for the animation)
-    bool ottFocus = false;
-    float grShown = 0.0f, glueLevelShown = -100.0f;
-    float ottGainShown[3] {}, ottLevelShown[3] { -100.0f, -100.0f, -100.0f };
+    int compKind = 0, compShownKind = 0;     // wanted now / being drawn (stays while fading out)
+    bool compHeld = false, compSwitchedView = false;
+    double compTouchMs = 0.0;
+    float compFade = 0.0f;
+    View viewBeforeComp = View::wave;
+    float glueGrUi = 0.0f, glueInUi = -100.0f;
+    float ottGainUi[3] {}, ottLevelUi[3] { -100.0f, -100.0f, -100.0f };
 
     static constexpr int fftOrder = 12, fftSize = 1 << fftOrder;
     juce::dsp::FFT fft { fftOrder };

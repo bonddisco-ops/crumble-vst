@@ -5,7 +5,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 # Static MSVC runtime: the plugin does not depend on the host's C++ runtime DLLs
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Crumble VERSION 3.2.0)
+project(Crumble VERSION 3.3.0)
 
 include(FetchContent)
 FetchContent_Declare(
